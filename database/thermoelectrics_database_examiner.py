@@ -16,10 +16,11 @@ import networkx as nx
 from wordcloud import WordCloud
 from nltk import ngrams
 from itertools import chain, combinations
+import glob
 import uuid
 import seaborn as sns
 from sklearn.metrics.pairwise import cosine_similarity
-from community import community_louvain  # pip install python-louvain
+from community import community_louvain
 from datetime import datetime
 
 # Matplotlib configuration
@@ -81,7 +82,9 @@ except Exception as e:
 # Custom spaCy tokenizer for hyphenated phrases
 @Language.component("custom_tokenizer")
 def custom_tokenizer(doc):
-    hyphenated_phrases = ["seebeck-coefficient", "power-factor", "figure-of-merit", "electrical-conductivity", "thermal-conductivity", "carrier-concentration", "carrier-mobility", "p-type", "n-type"]
+    hyphenated_phrases = ["seebeck-coefficient", "power-factor", "figure-of-merit", "electrical-conductivity", 
+                         "thermal-conductivity", "carrier-concentration", "carrier-mobility", "p-type", 
+                         "n-type", "thermoelectric-material", "ZT-value", "seebeck-effect"]
     for phrase in hyphenated_phrases:
         if phrase.lower() in doc.text.lower():
             with doc.retokenize() as retokenizer:
@@ -119,6 +122,10 @@ if "db_file" not in st.session_state:
     st.session_state.db_file = UNIVERSE_DB_FILE if os.path.exists(UNIVERSE_DB_FILE) else None
 if "term_counts" not in st.session_state:
     st.session_state.term_counts = None
+if "csv_data" not in st.session_state:
+    st.session_state.csv_data = None
+if "csv_filename" not in st.session_state:
+    st.session_state.csv_filename = None
 if "knowledge_graph" not in st.session_state:
     st.session_state.knowledge_graph = None
 
@@ -154,86 +161,130 @@ def inspect_database(db_path):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [table[0] for table in cursor.fetchall()]
+        tables = cursor.fetchall()
         st.subheader("Tables in Database")
         if tables:
-            st.write(tables)
+            st.write([table[0] for table in tables])
         else:
             st.warning("No tables found in the database.")
             conn.close()
             return None
 
-        table_name = "papers"
-        if table_name not in tables:
-            st.warning(f"No 'papers' table found. Available tables: {', '.join(tables)}")
-            table_name = st.selectbox("Select Table", tables, key="table_select")
-        
-        st.subheader(f"Schema of '{table_name}' Table")
-        cursor.execute(f"PRAGMA table_info({table_name});")
-        schema = cursor.fetchall()
-        schema_df = pd.DataFrame(schema, columns=["cid", "name", "type", "notnull", "dflt_value", "pk"])
-        st.dataframe(schema_df[["name", "type", "notnull", "dflt_value", "pk"]], use_container_width=True)
-        available_columns = [col[1] for col in schema]
-        update_log(f"Available columns in '{table_name}' table: {', '.join(available_columns)}")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers';")
+        if cursor.fetchone():
+            st.subheader("Schema of 'papers' Table")
+            cursor.execute("PRAGMA table_info(papers);")
+            schema = cursor.fetchall()
+            schema_df = pd.DataFrame(schema, columns=["cid", "name", "type", "notnull", "dflt_value", "pk"])
+            st.dataframe(schema_df[["name", "type", "notnull", "dflt_value", "pk"]], use_container_width=True)
+            available_columns = [col[1] for col in schema]
+            update_log(f"Available columns in 'papers' table: {', '.join(available_columns)}")
 
-        # Build dynamic query for sample data
-        select_columns = ["id", "title", "year"] if "id" in available_columns and "title" in available_columns else available_columns[:3]
-        if "content" in available_columns:
-            select_columns.append("substr(content, 1, 200) as sample_content")
-        if "abstract" in available_columns:
-            select_columns.append("substr(abstract, 1, 200) as sample_abstract")
-        if "relevance_prob" in available_columns:
-            select_columns.append("relevance_prob")
+            # Build dynamic query for sample data
+            select_columns = ["id", "title", "year"]
+            where_conditions = []
+            if "content" in available_columns:
+                select_columns.append("substr(content, 1, 200) as sample_content")
+                where_conditions.append("content IS NOT NULL")
+            if "abstract" in available_columns:
+                select_columns.append("substr(abstract, 1, 200) as sample_abstract")
+                where_conditions.append("abstract IS NOT NULL")
+            if "matched_terms" in available_columns:
+                select_columns.append("matched_terms")
+            if "relevance_prob" in available_columns:
+                select_columns.append("relevance_prob")
 
-        query = f"SELECT {', '.join(select_columns)} FROM {table_name} LIMIT 5"
-        try:
-            df = pd.read_sql_query(query, conn)
-            st.subheader(f"Sample Rows from '{table_name}' Table (First 5 Papers)")
-            if df.empty:
-                st.warning(f"No valid papers found in the '{table_name}' table.")
+            if not where_conditions:
+                where_clause = "1=1"
             else:
-                st.dataframe(df, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error executing sample query: {str(e)}")
-            update_log(f"Error executing sample query: {str(e)}")
+                where_clause = " OR ".join(where_conditions)
+
+            query = f"SELECT {', '.join(select_columns)} FROM papers WHERE {where_clause} LIMIT 5"
+            try:
+                df = pd.read_sql_query(query, conn)
+                st.subheader("Sample Rows from 'papers' Table (First 5 Papers)")
+                if df.empty:
+                    st.warning("No valid papers found in the 'papers' table.")
+                else:
+                    st.dataframe(df, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error executing sample query: {str(e)}")
+                update_log(f"Error executing sample query: {str(e)}")
+                conn.close()
+                return None
+
+            # Count total valid papers
+            total_query = f"SELECT COUNT(*) as count FROM papers WHERE {where_clause}"
+            cursor.execute(total_query)
+            total_papers = cursor.fetchone()[0]
+            st.subheader("Total Valid Papers")
+            st.write(f"{total_papers} papers")
+
+            # Term frequency analysis
+            terms_to_search = ["seebeck coefficient", "thermopower", "seebeck", "power factor", "zt", 
+                             "figure of merit", "thermoelectric", "thermoelectric material", "band gap", 
+                             "electrical conductivity", "thermal conductivity", "carrier concentration", 
+                             "carrier mobility", "p-type", "n-type"]
+            st.subheader("Term Frequency in Available Text Columns")
+            term_counts = {}
+            for term in terms_to_search:
+                conditions = []
+                if "abstract" in available_columns:
+                    conditions.append(f"abstract LIKE '%{term}%'")
+                if "content" in available_columns:
+                    conditions.append(f"content LIKE '%{term}%'")
+                if conditions:
+                    term_query = f"SELECT COUNT(*) FROM papers WHERE {' OR '.join(conditions)}"
+                    cursor.execute(term_query)
+                    count = cursor.fetchone()[0]
+                    term_counts[term] = count
+                    st.write(f"'{term}': {count} papers")
+                else:
+                    st.write(f"'{term}': Unable to search (no abstract or content columns)")
+                    update_log(f"Unable to search for '{term}': no abstract or content columns")
+
+            # Sample data for download
+            select_columns_download = ["id", "title", "year"]
+            if "content" in available_columns:
+                select_columns_download.append("substr(content, 1, 1000) as content")
+            if "abstract" in available_columns:
+                select_columns_download.append("substr(abstract, 1, 1000) as abstract")
+            if "matched_terms" in available_columns:
+                select_columns_download.append("matched_terms")
+            if "relevance_prob" in available_columns:
+                select_columns_download.append("relevance_prob")
+
+            query = f"SELECT {', '.join(select_columns_download)} FROM papers WHERE {where_clause} LIMIT 10"
+            try:
+                df_full = pd.read_sql_query(query, conn)
+                csv_filename = f"database_sample_{uuid.uuid4().hex}.csv"
+                csv_path = os.path.join(DB_DIR, csv_filename)
+                df_full.to_csv(csv_path, index=False)
+                with open(csv_path, "rb") as f:
+                    st.session_state.csv_data = f.read()
+                st.session_state.csv_filename = csv_filename
+                st.subheader("Download Sample Content")
+                st.download_button(
+                    label="Download Sample CSV",
+                    data=st.session_state.csv_data,
+                    file_name="database_sample.csv",
+                    mime="text/csv",
+                    key="download_csv"
+                )
+            except Exception as e:
+                st.error(f"Error generating sample CSV: {str(e)}")
+                update_log(f"Error generating sample CSV: {str(e)}")
+
+            conn.close()
+            st.success(f"Database inspection completed for {os.path.basename(db_path)}")
+            return term_counts
+        else:
+            st.warning("No 'papers' table found in the database.")
             conn.close()
             return None
-
-        # Count total valid papers
-        total_query = f"SELECT COUNT(*) as count FROM {table_name} WHERE {'content IS NOT NULL' if 'content' in available_columns else '1=1'}"
-        cursor.execute(total_query)
-        total_papers = cursor.fetchone()[0]
-        st.subheader("Total Valid Papers")
-        st.write(f"{total_papers} papers")
-
-        # Term frequency analysis
-        terms_to_search = ["seebeck coefficient", "thermopower", "seebeck", "power factor", "zt", "figure of merit", "thermoelectric", "thermoelectric material", "band gap", "electrical conductivity", "thermal conductivity", "carrier concentration", "carrier mobility", "p-type", "n-type"]
-        st.subheader("Term Frequency in Available Text Columns")
-        term_counts = {}
-        for term in terms_to_search:
-            conditions = []
-            if "abstract" in available_columns:
-                conditions.append(f"abstract LIKE '%{term}%'")
-            if "content" in available_columns:
-                conditions.append(f"content LIKE '%{term}%'")
-            if conditions:
-                term_query = f"SELECT COUNT(*) FROM {table_name} WHERE {' OR '.join(conditions)}"
-                cursor.execute(term_query)
-                count = cursor.fetchone()[0]
-                term_counts[term] = count
-                st.write(f"'{term}': {count} papers")
-            else:
-                st.write(f"'{term}': Unable to search (no abstract or content columns)")
-                update_log(f"Unable to search for '{term}': no abstract or content columns")
-
-        conn.close()
-        st.success(f"Database inspection completed for {os.path.basename(db_path)}")
-        return term_counts
     except Exception as e:
         st.error(f"Error reading database {os.path.basename(db_path)}: {str(e)}")
         update_log(f"Error reading database {os.path.basename(db_path)}: {str(e)}")
-        if 'conn' in locals():
-            conn.close()
         return None
 
 @st.cache_data(hash_funcs={str: lambda x: x})
@@ -251,17 +302,21 @@ def categorize_terms(db_file, similarity_threshold=0.7, min_freq=5):
 
         update_log(f"Loaded {len(df)} content entries")
         categories = {
-            "Thermoelectric Performance": ["seebeck coefficient", "thermopower", "seebeck", "power factor", "zt", "figure of merit"],
-            "Material Properties": ["thermoelectric material", "band gap", "electrical conductivity", "thermal conductivity"],
-            "Carrier Properties": ["carrier concentration", "carrier mobility"],
-            "Doping Types": ["p-type", "n-type"]
+            "Thermoelectric Performance": ["seebeck coefficient", "thermopower", "seebeck", "power factor", "zt", "figure of merit", "thermoelectric efficiency", "thermoelectric conversion"],
+            "Material Properties": ["thermoelectric material", "band gap", "electrical conductivity", "thermal conductivity", "lattice thermal conductivity", "electronic thermal conductivity", "thermal diffusivity"],
+            "Carrier Properties": ["carrier concentration", "carrier mobility", "charge carrier", "electron mobility", "hole mobility", "carrier transport", "carrier scattering"],
+            "Doping Types": ["p-type", "n-type", "doping", "dopant", "acceptor", "donor"],
+            "Material Components": ["bismuth telluride", "lead telluride", "silicon germanium", "skutterudite", "clathrate", "half-heusler", "zinc antimonide"]
         }
-        exclude_words = ["et al", "phys rev", "appl phys", "model", "based", "high", "field"]
+        component_terms = ["bismuth", "telluride", "antimonide", "germanium", "silicon", "lead", "tellurium", "selenide"]
+        exclude_words = ["et al", "phys rev", "appl phys", "model", "based", "high", "field", "journal", "paper"]
         
         # Generate embeddings for seed terms
         seed_embeddings = {cat: [get_scibert_embedding(term) for term in terms if get_scibert_embedding(term) is not None] for cat, terms in categories.items()}
+        component_embeddings = [get_scibert_embedding(term) for term in component_terms if get_scibert_embedding(term) is not None]
         
         categorized_terms = {cat: [] for cat in categories}
+        categorized_terms["Material Components"] = []
         other_terms = []
         term_freqs = Counter()
         
@@ -307,6 +362,8 @@ def categorize_terms(db_file, similarity_threshold=0.7, min_freq=5):
             
             if best_cat:
                 categorized_terms[best_cat].append((term, term_freqs[term], best_score))
+            elif any(np.dot(term_embedding, comp_emb) / (np.linalg.norm(term_embedding) * np.linalg.norm(comp_emb)) > similarity_threshold for comp_emb in component_embeddings if np.linalg.norm(term_embedding) != 0 and np.linalg.norm(comp_emb) != 0):
+                categorized_terms["Material Components"].append((term, term_freqs[term], best_score))
             else:
                 other_terms.append((term, term_freqs[term], best_score))
             
@@ -315,7 +372,7 @@ def categorize_terms(db_file, similarity_threshold=0.7, min_freq=5):
         # Sort terms by frequency within each category
         for cat in categorized_terms:
             categorized_terms[cat] = sorted(categorized_terms[cat], key=lambda x: x[1], reverse=True)
-        categorized_terms["Other"] = sorted(other_terms, key=lambda x: x[1], reverse=True)[:50]
+        categorized_terms["Other"] = sorted(other_terms, key=lambda x: x[1], reverse=True)[:50]  # Limit other terms to top 50
         
         update_log(f"Categorized {sum(len(terms) for terms in categorized_terms.values())} terms across {len(categorized_terms)} categories")
         return categorized_terms, term_freqs
@@ -335,37 +392,40 @@ def build_knowledge_graph_data(categorized_terms, db_file, min_co_occurrence=2, 
 
         G = nx.Graph()
         
-        # Add category nodes
+        # Add category nodes with enhanced attributes
         categories = list(categorized_terms.keys())
         for cat in categories:
             G.add_node(cat, type="category", freq=0, size=2000, color="skyblue")
         
-        # Add all terms as nodes
+        # Add all terms as nodes with enhanced attributes
         term_freqs = {}
         term_units = {
             "Thermoelectric Performance": "μV/K or dimensionless",
             "Material Properties": "S/m or W/m·K",
             "Carrier Properties": "cm⁻³ or cm²/V·s",
             "Doping Types": "none",
+            "Material Components": "various",
             "Other": "various"
         }
         
+        # Create a mapping of all terms to their categories
         term_to_category = {}
         for cat, terms in categorized_terms.items():
             for term, freq, _ in terms:
                 term_to_category[term] = cat
         
+        # Add all terms as nodes with proper categorization
         for cat, terms in categorized_terms.items():
             for term, freq, score in terms[:top_n]:
-                G.add_node(term, type="term", 
+                G.add_node(term, type="term" if cat != "Material Components" else "component", 
                           freq=freq, category=cat, unit=term_units.get(cat, "None"),
                           size=500 + 2000 * (freq / max([f for _, f, _ in terms], default=1)),
-                          color="salmon",
+                          color="salmon" if cat != "Material Components" else "lightgreen",
                           score=score)
                 G.add_edge(cat, term, weight=1.0, type="category-term", label="belongs_to")
                 term_freqs[term] = freq
         
-        # Compute co-occurrences
+        # Compute co-occurrences with enhanced relationship detection
         co_occurrence_counts = defaultdict(lambda: defaultdict(int))
         
         for content in df["content"].values:
@@ -385,10 +445,11 @@ def build_knowledge_graph_data(categorized_terms, db_file, min_co_occurrence=2, 
                         co_occurrence_counts[term1][term2] += 1
                         co_occurrence_counts[term2][term1] += 1
         
-        # Add co-occurrence edges
+        # Add co-occurrence edges with enhanced attributes
         for term1, related_terms in co_occurrence_counts.items():
             for term2, count in related_terms.items():
                 if count >= min_co_occurrence and term1 in G.nodes and term2 in G.nodes:
+                    # Determine relationship type based on categories
                     cat1 = term_to_category.get(term1, "Other")
                     cat2 = term_to_category.get(term2, "Other")
                     
@@ -399,12 +460,14 @@ def build_knowledge_graph_data(categorized_terms, db_file, min_co_occurrence=2, 
                         rel_type = "inter_category"
                         label = f"related_to ({count})"
                     
+                    # Add edge with enhanced attributes
                     G.add_edge(term1, term2, weight=count, type="term-term", 
                               relationship=rel_type, label=label, strength=count)
         
-        # Add hierarchical relationships
+        # Add hierarchical relationships between terms
         for term in list(G.nodes):
             if G.nodes[term].get("type") == "term":
+                # Find parent terms (shorter terms that are substrings)
                 for potential_parent in list(G.nodes):
                     if (G.nodes[potential_parent].get("type") == "term" and 
                         potential_parent != term and 
@@ -446,6 +509,9 @@ def build_knowledge_graph_data(categorized_terms, db_file, min_co_occurrence=2, 
         return None, None
 
 def enhance_ner_with_knowledge_graph(ner_df, knowledge_graph):
+    """
+    Enhance NER results using knowledge graph insights
+    """
     if ner_df.empty or knowledge_graph is None:
         return ner_df
     
@@ -455,22 +521,28 @@ def enhance_ner_with_knowledge_graph(ner_df, knowledge_graph):
         entity_text = row["entity_text"]
         entity_label = row["entity_label"]
         
+        # Find related entities in the knowledge graph
         if entity_text in knowledge_graph.nodes:
+            # Get neighbors in the knowledge graph
             neighbors = list(knowledge_graph.neighbors(entity_text))
             
+            # Find related terms with strong connections
             strong_connections = []
             for neighbor in neighbors:
                 edge_data = knowledge_graph.get_edge_data(entity_text, neighbor)
-                if edge_data and edge_data.get("strength", 0) > 3:
+                if edge_data and edge_data.get("strength", 0) > 3:  # Threshold for strong connection
                     strong_connections.append((neighbor, edge_data.get("strength", 0)))
             
+            # Sort by strength
             strong_connections.sort(key=lambda x: x[1], reverse=True)
             
+            # Add context from knowledge graph
             context_enhanced = row["context"]
             if strong_connections:
                 related_terms = ", ".join([f"{term}({strength})" for term, strength in strong_connections[:3]])
                 context_enhanced += f" [KG: Related to {related_terms}]"
             
+            # Create enhanced row
             enhanced_row = row.to_dict()
             enhanced_row["context"] = context_enhanced
             enhanced_row["kg_related_terms"] = ", ".join([term for term, _ in strong_connections])
@@ -523,6 +595,7 @@ def perform_ner_on_terms(db_file, selected_terms):
         for i, row in df.iterrows():
             try:
                 text = row["content"].lower()
+                text = re.sub(r"young's modulus|youngs modulus", "young's modulus", text)
                 if len(text) > nlp.max_length:
                     text = text[:nlp.max_length]
                     update_log(f"Truncated content for entry {row['paper_id']}")
@@ -626,6 +699,7 @@ def perform_ner_on_terms(db_file, selected_terms):
                         if not range_valid:
                             continue
                     elif any(v is None for v in valid_units.get(best_label, [])):
+                        # Allow qualitative if None is in valid_units
                         pass
                     else:
                         continue
@@ -652,12 +726,13 @@ def perform_ner_on_terms(db_file, selected_terms):
                 update_log(f"Error processing entry {row['paper_id']}: {str(e)}")
         update_log(f"Extracted {len(entities)} entities")
         
-        entities_df = pd.DataFrame(entities)
+        # Enhance NER results with knowledge graph if available
         if st.session_state.knowledge_graph is not None:
+            entities_df = pd.DataFrame(entities)
             enhanced_entities = enhance_ner_with_knowledge_graph(entities_df, st.session_state.knowledge_graph)
             return enhanced_entities
         else:
-            return entities_df
+            return pd.DataFrame(entities)
     except Exception as e:
         update_log(f"NER analysis failed: {str(e)}")
         st.error(f"NER analysis failed: {str(e)}")
@@ -735,7 +810,7 @@ def plot_ner_value_histograms(df, categories_units, top_n, colormap):
     figs = []
     for category, unit in categories_units.items():
         cat_df = value_df[value_df["entity_label"] == category]
-        if unit:
+        if unit:  # If a specific unit is requested
             cat_df = cat_df[cat_df["unit"] == unit]
         if cat_df.empty:
             update_log(f"No data for {category} with unit {unit}")
@@ -747,7 +822,7 @@ def plot_ner_value_histograms(df, categories_units, top_n, colormap):
             continue
         
         fig, ax = plt.subplots(figsize=(8, 4))
-        color = cm.get_cmap(colormap)(0.5)
+        color = cm.get_cmap(colormap)(0.5)  # Use a consistent color from colormap
         ax.hist(values, bins=20, color=color, edgecolor="black")
         ax.set_xlabel(f"Value ({unit})")
         ax.set_ylabel("Count")
@@ -758,20 +833,23 @@ def plot_ner_value_histograms(df, categories_units, top_n, colormap):
     return figs
 
 def visualize_knowledge_graph_communities(G):
+    """
+    Visualize the knowledge graph with community detection
+    """
     if G is None or not G.edges():
         return None
     
-    # Detect communities
+    # Detect communities using Louvain method
     partition = community_louvain.best_partition(G)
     
-    # Color map for communities
+    # Create a color map for communities
     communities = set(partition.values())
     color_map = cm.get_cmap('tab20', len(communities))
     
     # Create figure
     fig, ax = plt.subplots(figsize=(12, 10))
     
-    # Position nodes
+    # Position nodes using spring layout
     pos = nx.spring_layout(G, k=1, iterations=50, seed=42)
     
     # Draw nodes with community colors
@@ -785,13 +863,13 @@ def visualize_knowledge_graph_communities(G):
                    for _, _, d in G.edges(data=True)]
     nx.draw_networkx_edges(G, pos, width=edge_widths, alpha=0.5, edge_color='gray', ax=ax)
     
-    # Draw labels
+    # Draw labels only for important nodes
     important_nodes = [node for node in G.nodes() if G.nodes[node].get('type') == 'category' or 
                       G.nodes[node].get('freq', 0) > 10]
     labels = {node: node for node in important_nodes}
     nx.draw_networkx_labels(G, pos, labels, font_size=8, font_weight='bold', ax=ax)
     
-    # Add legend
+    # Add legend for community colors
     community_labels = {}
     for node, comm_id in partition.items():
         if G.nodes[node].get('type') == 'category':
@@ -812,30 +890,30 @@ def visualize_knowledge_graph_communities(G):
 
 # Database selection
 st.header("Select or Upload Database")
-db_files = [f for f in os.listdir(DB_DIR) if f.endswith('.db') and f in ["seebeck_metadata.db", "seebeck_universe.db"]]
-db_options = db_files + ["Upload a new .db file"]
-default_index = db_options.index("seebeck_universe.db") if "seebeck_universe.db" in db_options else 0
+db_files = glob.glob(os.path.join(DB_DIR, "*.db"))
+db_options = [os.path.basename(f) for f in db_files if f in [METADATA_DB_FILE, UNIVERSE_DB_FILE]] + ["Upload a new .db file"]
+# Ensure seebeck_universe.db is included and set as default
+if os.path.basename(UNIVERSE_DB_FILE) not in db_options and os.path.exists(UNIVERSE_DB_FILE):
+    db_options.insert(0, os.path.basename(UNIVERSE_DB_FILE))
+default_index = db_options.index(os.path.basename(UNIVERSE_DB_FILE)) if os.path.basename(UNIVERSE_DB_FILE) in db_options else 0
 db_selection = st.selectbox("Select Database", db_options, index=default_index, key="db_select")
-
 uploaded_file = None
 if db_selection == "Upload a new .db file":
     uploaded_file = st.file_uploader("Upload SQLite Database (.db)", type=["db"], key="db_upload")
     if uploaded_file:
         temp_db_path = os.path.join(DB_DIR, f"uploaded_{uuid.uuid4().hex}.db")
-        try:
-            with open(temp_db_path, "wb") as f:
-                f.write(uploaded_file.read())
-            st.session_state.db_file = temp_db_path
-            update_log(f"Uploaded database saved as {temp_db_path}")
-        except Exception as e:
-            st.error(f"Failed to save uploaded database: {str(e)}")
-            update_log(f"Failed to save uploaded database: {str(e)}")
+        with open(temp_db_path, "wb") as f:
+            f.write(uploaded_file.read())
+        st.session_state.db_file = temp_db_path
+        update_log(f"Uploaded database saved as {temp_db_path}")
 else:
-    st.session_state.db_file = os.path.join(DB_DIR, db_selection)
-    if not os.path.exists(st.session_state.db_file):
-        st.error(f"Selected database {db_selection} not found in {DB_DIR}.")
-        update_log(f"Selected database {db_selection} not found in {DB_DIR}.")
-        st.stop()
+    if db_selection == os.path.basename(METADATA_DB_FILE):
+        st.session_state.db_file = METADATA_DB_FILE
+    elif db_selection == os.path.basename(UNIVERSE_DB_FILE):
+        st.session_state.db_file = UNIVERSE_DB_FILE
+    else:
+        st.session_state.db_file = os.path.join(DB_DIR, db_selection)
+    update_log(f"Selected database: {db_selection}")
 
 # Main app logic
 if st.session_state.db_file and os.path.exists(st.session_state.db_file):
@@ -894,34 +972,44 @@ if st.session_state.db_file and os.path.exists(st.session_state.db_file):
                     with st.spinner("Building knowledge graph..."):
                         G, csv_data = build_knowledge_graph_data(st.session_state.categorized_terms, st.session_state.db_file, min_co_occurrence=min_freq, top_n=top_n)
                         if G and G.edges():
+                            # Create the figure here instead of in the cached function
                             fig, ax = plt.subplots(figsize=(12, 10))
                             pos = nx.spring_layout(G, k=1, iterations=50, seed=42)
                             
+                            # Color nodes by type
                             node_colors = []
                             node_sizes = []
                             for node in G.nodes:
                                 if G.nodes[node]["type"] == "category":
                                     node_colors.append("skyblue")
                                     node_sizes.append(2000)
+                                elif G.nodes[node]["type"] == "component":
+                                    node_colors.append("lightgreen")
+                                    node_sizes.append(1500)
                                 else:
                                     node_colors.append("salmon")
                                     node_sizes.append(G.nodes[node].get("size", 500))
                             
+                            # Draw nodes
                             nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_sizes, alpha=0.8, ax=ax)
                             
+                            # Draw edges with different styles based on type
                             term_term_edges = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "term-term"]
                             category_term_edges = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "category-term"]
                             hierarchical_edges = [(u, v) for u, v, d in G.edges(data=True) if d["type"] == "hierarchical"]
                             
+                            # Draw edges with different styles
                             nx.draw_networkx_edges(G, pos, edgelist=term_term_edges, width=1.0, alpha=0.5, edge_color="gray", ax=ax)
                             nx.draw_networkx_edges(G, pos, edgelist=category_term_edges, width=2.0, alpha=0.7, edge_color="blue", ax=ax)
                             nx.draw_networkx_edges(G, pos, edgelist=hierarchical_edges, width=1.5, alpha=0.7, edge_color="green", style="dashed", ax=ax)
                             
+                            # Draw labels only for important nodes
                             important_nodes = [node for node in G.nodes() if G.nodes[node].get('type') == 'category' or 
                                               G.nodes[node].get('freq', 0) > 10]
                             labels = {node: node for node in important_nodes}
                             nx.draw_networkx_labels(G, pos, labels, font_size=8, font_weight='bold', ax=ax)
                             
+                            # Add legend
                             from matplotlib.lines import Line2D
                             legend_elements = [
                                 Line2D([0], [0], color='blue', lw=2, label='Category-Term'),
@@ -935,6 +1023,7 @@ if st.session_state.db_file and os.path.exists(st.session_state.db_file):
                             
                             st.pyplot(fig)
                             
+                            # Show community detection visualization
                             st.subheader("Community Detection")
                             community_fig = visualize_knowledge_graph_communities(G)
                             if community_fig:
@@ -977,6 +1066,7 @@ if st.session_state.db_file and os.path.exists(st.session_state.db_file):
             default_terms = [term for term in ["seebeck coefficient", "thermopower", "power factor", "zt", "electrical conductivity", "thermal conductivity", "carrier concentration"] if term in available_terms]
             selected_terms = st.multiselect("Select Terms for NER", available_terms, default=default_terms, key="select_terms")
             
+            # Add option to use knowledge graph for NER enhancement
             use_kg_enhancement = st.checkbox("Use Knowledge Graph for NER Enhancement", value=True, 
                                            help="Use knowledge graph relationships to improve NER results")
             
@@ -993,6 +1083,7 @@ if st.session_state.db_file and os.path.exists(st.session_state.db_file):
                         else:
                             st.success(f"Extracted {len(ner_df)} entities!")
                             
+                            # Show enhanced NER results if knowledge graph was used
                             if use_kg_enhancement and "kg_related_terms" in ner_df.columns:
                                 st.subheader("NER Results Enhanced with Knowledge Graph")
                                 st.dataframe(
@@ -1014,6 +1105,7 @@ if st.session_state.db_file and os.path.exists(st.session_state.db_file):
                             fig_box = plot_ner_value_boxplot(ner_df, top_n, colormap)
                             if fig_box:
                                 st.pyplot(fig_box)
+                            # Plot histograms for numerical values with specified units
                             categories_units = {
                                 "Thermoelectric Performance": "μV/K",
                                 "Material Properties": "S/m",
@@ -1031,15 +1123,19 @@ if st.session_state.db_file and os.path.exists(st.session_state.db_file):
                         st.error(f"Cannot perform NER analysis: {os.path.basename(st.session_state.db_file)} not found.")
                         update_log(f"Cannot perform NER analysis: {os.path.basename(st.session_state.db_file)} not found.")
         st.text_area("Logs", "\n".join(st.session_state.log_buffer), height=150, key="ner_logs")
+else:
+    st.warning(f"Select or upload a database file. Ensure {os.path.basename(UNIVERSE_DB_FILE)} is available for full-text analysis.")
 
 # Notes
 st.markdown("""
 ---
 **Notes**
-- **Database Inspection**: View tables, schemas, and sample data from the selected database.
-- **Term Categorization**: Groups terms into Thermoelectric Performance, Material Properties, Carrier Properties, Doping Types using SciBERT embeddings from full-text content.
-- **Knowledge Graph**: Visualizes relationships between categories and terms with community detection.
-- **NER Analysis**: Extracts entities with numerical values and units, enhanced with knowledge graph relationships.
-- The script dynamically adjusts to missing columns or tables.
-- Check `seebeck_analysis.log` for detailed logs (in the same directory as the script).
+- **Database Inspection**: View tables, schemas, and sample data from `seebeck_metadata.db` or `seebeck_universe.db`. Default database is `seebeck_universe.db` for full-text analysis of arXiv papers.
+- **Term Categorization**: Groups terms into Thermoelectric Performance, Material Properties, Carrier Properties, Doping Types, and Material Components using SciBERT embeddings, based on full-text content from `seebeck_universe.db`.
+- **Knowledge Graph**: Visualizes relationships between categories, terms, and components with enhanced branching and community detection, using `seebeck_universe.db`.
+- **NER Analysis**: Extracts entities with context-aware unit assignment from `seebeck_universe.db`, enhanced with knowledge graph relationships.
+- **Knowledge Graph Enhancement**: Uses community detection to identify related term clusters and hierarchical relationships.
+- Place `seebeck_metadata.db` and `seebeck_universe.db` in the script's directory or upload them. `seebeck_universe.db` is required for full-text analysis and must have a `content` column.
+- The script dynamically adjusts to missing columns (e.g., `categories`, `abstract`) in `seebeck_universe.db` by querying only available columns.
+- Check `seebeck_analysis.log` for detailed logs, including schema details and query adjustments.
 """)
