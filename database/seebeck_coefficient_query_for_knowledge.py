@@ -228,9 +228,10 @@ initialize_db(UNIVERSE_DB_FILE)
 
 # ===== KEY TERMS AND SCORING =====
 KEY_TERMS = [
-    "seebeck coefficient", "thermopower", "seebeck", "power factor", "zt", "figure of merit",
+    "seebeck coefficient", "seebeck", "power factor", "zt", "figure of merit",
     "thermoelectric", "thermoelectric material", "band gap", "electrical conductivity",
-    "thermal conductivity", "carrier concentration", "carrier mobility", "p-type", "n-type"
+    "lattice thermal conductivity", "electronic thermal conductivity",  "carrier concentration",
+    "carrier mobility", "p-type", "n-type", "thermopower"
 ]
 
 def score_abstract_with_scibert(abstract):
