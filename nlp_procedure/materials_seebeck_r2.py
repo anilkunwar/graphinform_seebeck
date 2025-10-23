@@ -110,7 +110,7 @@ initial_window_chars = st.slider("Initial context window (chars)", 200, 2000, 60
 max_window_chars = st.slider("Max context window (chars)", 1000, 10000, 5000, 100)
 max_material_tokens = st.slider("Max tokens for material name", 1, 20, 10)
 outlier_zscore_thresh = st.number_input("Z-score threshold for outliers", 0.0, 10.0, 2.5, 0.1)
-use_spacy = st.checkbox("Use spaCy for semantics (if available)", value=SPACYAvailable)
+use_spacy = st.checkbox("Use spaCy for semantics (if available)", value=SPACY_AVAILABLE)
 use_quantulum = st.checkbox("Use quantulum3 for quantities (if available)", value=QUANTULUM_AVAILABLE)
 
 if uploaded_file is None:
