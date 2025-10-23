@@ -64,6 +64,8 @@ INVALID_TERMS = {
     'equation', 'figure', 'table', 'section', 'method', 'results', 'discussion'
 }
 
+DB_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # -----------------------------
 # Regex NER for formulas with fixed pattern
 # -----------------------------
@@ -213,7 +215,7 @@ if not Span.has_extension("seebeck_value"):
     Span.set_extension("seebeck_value", default=None)
 
 # -----------------------------
-# Load spaCy model
+# Load spaCy model with Seebeck NER
 # -----------------------------
 def load_spacy_model(synonyms):
     try:
