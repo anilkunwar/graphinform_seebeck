@@ -178,14 +178,15 @@ if len(text.strip()) == 0:
 st.subheader("Preview (first 2000 chars)")
 st.text_area("extracted_text_preview", text[:2000], height=220)
 
-# --- Strategy 3: Safe Regex Patterns (Fixed Dash Issue) ---
-num_pattern = r"(?P<number>[+\-]?\d{1,3}(?:[,\.\d{3}])*\.?\d*(?:[eE][+\-]?\d+)?|\d*\.?\d+(?:[eE][+\-]?\d+)?)"
+# --- Strategy 3: Safe Regex Patterns (Fixed) ---
+# Fixed number pattern - removed problematic character class
+num_pattern = r"(?P<number>[+\-]?(?:\d{1,3}(?:[,\s]\d{3})*|\d*)(?:\.\d+)?(?:[eE][+\-]?\d+)?)"
 units_pattern = r"(?:µV\/K|μV\/K|uV\/K|microvolts? per kelvin|mV\/K|V\/K|μV K(?:\^-1|⁻¹|-1)?|uV K(?:\^-1|⁻¹|-1)?|mV K(?:\^-1|⁻¹|-1)?|V K(?:\^-1|⁻¹|-1)?|µV⋅K⁻¹|μV⋅K⁻¹)"
 dash_variants = r"(?:to|\-|–|—|−)"  # Safe non-capturing group for all dash types
 
-# Fixed regex: dash_variants outside character class
+# Fixed regex: simplified and tested
 value_regex = re.compile(
-    rf"(?:(?:±|\+\/\-)\s*)?(?:{num_pattern})(?:\s*{dash_variants}\s*{num_pattern})?\s*(?P<unit>{units_pattern})",
+    rf"(?:(?:±|\+\/\-)\s*)?{num_pattern}(?:\s*{dash_variants}\s*{num_pattern})?\s*(?P<unit>{units_pattern})",
     flags=re.IGNORECASE | re.UNICODE
 )
 
@@ -253,7 +254,7 @@ def find_nearest_value(center_idx, txt, initial_window=600, max_window=5000):
                 dist = abs(center_idx - (abs_start + abs_end)//2)
                 raw = m.group(0).strip()
                 number_text = m.group("number") or re.search(r"[+\-]?\d+\.?\d*", raw).group(0)
-                number_text_norm = number_text.replace(",", "")
+                number_text_norm = number_text.replace(",", "").replace(" ", "")
                 try:
                     numeric = float(number_text_norm)
                 except:
