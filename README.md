@@ -11,6 +11,11 @@ Database examiner
 
 [![machinelearningseebeck](https://img.shields.io/badge/dbexaminer-streamlit-red)](https://seebeckdatabase-examiner.streamlit.app/)
 
+# How to of NLP
+
+[![machinelearningseebeck](https://img.shields.io/badge/seebeckreader1-streamlit-red)](https://seebeck-coefficient-textreader.streamlit.app/)
+
+
 # Training 
 
 
