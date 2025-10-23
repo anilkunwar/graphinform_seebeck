@@ -1,0 +1,28 @@
+streamlit==1.39.0
+#rich==13.3.4   # compatible with streamlit 1.39.0
+PyPDF2==3.0.1
+wordcloud==1.9.3
+networkx==3.3
+nltk==3.9.1
+matplotlib==3.9.2
+seaborn==0.13.2
+spacy==3.8.7
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#egg=en_core_web_sm
+#https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+#https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.0.0/en_core_web_lg-3.0.0.tar.gz
+typing_extensions==4.12.2
+pydantic==2.11.5   # ✅ Compatible with spaCy 3.8.x
+confection==0.1.5
+typing_inspection==0.4.0
+click==8.1.7
+typer==0.12.5
+arxiv
+PyMuPDF
+plotly
+# Hugging Face + Torch (pin stable versions)
+transformers==4.47.0
+torch==2.8.0
+python-louvain
+scikit-learn
+pyvis==0.3.2
+psutil
