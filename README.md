@@ -18,3 +18,5 @@ Database examiner
 [![machinelearningseebeck](https://img.shields.io/badge/formulagraph1-streamlit-red)](https://material-formula-and-graph.streamlit.app/)
 
 [![machinelearningseebeck](https://img.shields.io/badge/formulagraph2-streamlit-red)](https://material-formula-and-graph2.streamlit.app/)
+
+[![machinelearningseebeck](https://img.shields.io/badge/formulagraph3-streamlit-red)](https://material-formula-and-graph3.streamlit.app/)
