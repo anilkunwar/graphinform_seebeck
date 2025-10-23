@@ -15,6 +15,8 @@ Database examiner
 
 [![machinelearningseebeck](https://img.shields.io/badge/seebeckreader1-streamlit-red)](https://seebeck-coefficient-textreader.streamlit.app/)
 
+[![machinelearningseebeck](https://img.shields.io/badge/seebeckreader2-streamlit-red)](https://seebeck-coefficient-textreader2.streamlit.app/)
+
 
 # Training 
 
