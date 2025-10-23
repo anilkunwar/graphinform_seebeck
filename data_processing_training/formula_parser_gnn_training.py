@@ -54,6 +54,8 @@ INVALID_TERMS = {
     'equation', 'figure', 'table', 'section', 'method', 'results', 'discussion'
 }
 
+DB_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # -----------------------------
 # Regex NER for formulas with fixed pattern
 # -----------------------------
@@ -134,6 +136,31 @@ def score_formula_context(formula, text, synonyms):
     return max(0.0, min(score, 1.0))
 
 # -----------------------------
+# Seebeck value extraction patterns
+# -----------------------------
+def extract_seebeck_value(text):
+    """Extract Seebeck values from text with comprehensive patterns."""
+    patterns = [
+        r"seebeck\s+coefficient[s]?\s*[=:]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
+        r"s\s*[=:]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
+        r"α\s*[=:]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
+        r"thermoelectric\s+power\s*[=:]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
+        r"seebeck\s*[=:]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
+        r"([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)\s*(?:for|of|in)\s+[A-Za-z]",
+    ]
+    
+    for pattern in patterns:
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        for match in matches:
+            try:
+                value = float(match.group(1))
+                if -500 <= value <= 500:  # Reasonable Seebeck range
+                    return value
+            except ValueError:
+                continue
+    return None
+
+# -----------------------------
 # Material matcher with synonyms
 # -----------------------------
 def build_material_matcher(nlp, synonyms):
@@ -180,30 +207,6 @@ def load_spacy_model(synonyms):
     return nlp
 
 # -----------------------------
-# Link formulas to Seebeck value
-# -----------------------------
-def link_formula_to_seebeck(doc):
-    formulas = [(ent, score_formula_context(ent.text, doc.text, st.session_state.synonyms)) 
-                for ent in doc.ents if ent.label_ == "FORMULA"]
-    formulas = [f for f, score in formulas if score > 0.3]
-    seebeck_values = [ent for ent in doc.ents if ent.label_ == "SEEBECK_VALUE"]
-    pairs = []
-    for f in formulas:
-        nearest_seebeck = None
-        min_distance = float("inf")
-        for s in seebeck_values:
-            distance = abs(f.start_char - s.start_char)
-            if distance < min_distance:
-                min_distance = distance
-                nearest_seebeck = s
-        if nearest_seebeck:
-            pairs.append({
-                "Formula": f.text,
-                "Seebeck_Value": nearest_seebeck.text,  # Would parse to float in extraction
-            })
-    return pairs
-
-# -----------------------------
 # Featurize formulas for GNN
 # -----------------------------
 def featurize_formulas(formulas, targets=None):
@@ -240,7 +243,7 @@ def featurize_formulas(formulas, targets=None):
 
             # Simplify fractional stoichiometries
             el_amt_dict = comp.get_el_amt_dict()
-            el_amt_dict = {k: max(1, round(v)) for k, v in el_amt_dict.items()}  # Ensure at least 1 atom
+            el_amt_dict = {k: max(1, round(v)) for k, v in el_amt_dict.items()}
             total_atoms = sum(el_amt_dict.values())
             if total_atoms < 2:
                 update_log(f"Formula '{formula}' has fewer than 2 atoms: {el_amt_dict}")
@@ -253,7 +256,7 @@ def featurize_formulas(formulas, targets=None):
             for el, amt in el_amt_dict.items():
                 for _ in range(int(amt)):
                     species.append(el)
-                    frac_coords.append([pos * 0.1, 0, 0])  # Closer spacing to ensure edges
+                    frac_coords.append([pos * 0.1, 0, 0])
                     pos += 1
 
             if len(species) < 2:
@@ -263,8 +266,8 @@ def featurize_formulas(formulas, targets=None):
             lattice = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
             structure = Structure(lattice, species, frac_coords, coords_are_cartesian=False)
 
-            # Build structure graph with a robust strategy
-            strategy = MinimumDistanceNN(cutoff=10.0)  # Increased cutoff
+            # Build structure graph
+            strategy = MinimumDistanceNN(cutoff=10.0)
             sg = StructureGraph.with_local_env_strategy(structure, strategy)
 
             # Node features
@@ -280,12 +283,11 @@ def featurize_formulas(formulas, targets=None):
             edge_weights = []
             adjacency = list(sg.graph.adjacency())
             if not adjacency or len(structure) < 2:
-                # Fallback: fully connected graph
                 update_log(f"No edges found for '{formula}'; using fully connected graph")
                 for i in range(len(structure)):
                     for j in range(i + 1, len(structure)):
                         edge_index.append([i, j])
-                        edge_index.append([j, i])  # Undirected
+                        edge_index.append([j, i])
                         edge_weights.append(1.0)
             else:
                 for i, neighbor_dict in enumerate(adjacency):
@@ -353,22 +355,18 @@ def train_gnn(formulas, targets):
         update_log("No valid data for GNN training")
         return None, None, {}
 
-    # Featurize formulas into graph data
     data_list, valid_formulas, valid_targets = featurize_formulas(formulas, targets)
     if not data_list:
         update_log("No valid graph data for GNN training")
         return None, None, {}
 
-    # Create DataLoader for batch processing
     dataset = data_list
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    # Initialize GNN model
     model = GNNRegressor(input_dim=5, hidden_dim=64, output_dim=1)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     criterion = nn.MSELoss()
 
-    # Training loop
     model.train()
     for epoch in range(100):
         total_loss = 0
@@ -381,161 +379,64 @@ def train_gnn(formulas, targets):
             total_loss += loss.item()
         update_log(f"Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
 
-    # Placeholder scaler for compatibility
     scaler = StandardScaler()
-
-    # Save models
     save_formats = st.session_state.get('save_formats', ["pkl", "db", "pt", "h5"])
     model_files = {}
 
-    # SQLite Database (.db)
-    if "db" in save_formats:
-        try:
-            conn = sqlite3.connect(st.session_state.db_file)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS models (
-                    model_type TEXT,
-                    format TEXT,
-                    model_data BLOB
-                )
-            """)
-            temp_path = os.path.join(DB_DIR, "temp_gnn.pt")
-            torch.save(model.state_dict(), temp_path)
-            with open(temp_path, "rb") as f:
-                model_data = f.read()
-            cursor.execute(
-                "INSERT INTO models (model_type, format, model_data) VALUES (?, ?, ?)",
-                ("gnn_model", "pt", model_data)
-            )
-            conn.commit()
-            conn.close()
-            os.remove(temp_path)
-            update_log("Saved GNN model to SQLite database")
-        except Exception as e:
-            update_log(f"Failed to save GNN model to SQLite database: {str(e)}")
-            st.session_state.error_summary.append(f"SQLite save error: {str(e)}")
-
-    # Pickle (.pkl)
-    if "pkl" in save_formats:
-        try:
-            scaler_path = os.path.join(DB_DIR, "scaler.pkl")
-            joblib.dump(scaler, scaler_path)
-            model_files["scaler.pkl"] = scaler_path
-            update_log(f"Saved scaler to {scaler_path}")
-        except Exception as e:
-            update_log(f"Failed to save .pkl scaler: {str(e)}")
-            st.session_state.error_summary.append(f"Pickle save error: {str(e)}")
-
-    # PyTorch (.pt)
+    # Save in multiple formats
     if "pt" in save_formats:
         try:
-            model_path = os.path.join(DB_DIR, "gnn_model.pt")
+            model_path = os.path.join(DB_DIR, "gnn_regressor.pt")
             torch.save(model.state_dict(), model_path)
-            model_files["gnn_model.pt"] = model_path
-            update_log(f"Saved GNN model to {model_path}")
-
-            scaler_params = {
-                'mean': torch.tensor([0.0] * 5),
-                'scale': torch.tensor([1.0] * 5)
-            }
-            scaler_path = os.path.join(DB_DIR, "scaler.pt")
-            torch.save(scaler_params, scaler_path)
-            model_files["scaler.pt"] = scaler_path
-            update_log(f"Saved scaler to {scaler_path}")
+            model_files["gnn_regressor.pt"] = model_path
+            update_log(f"Saved GNN regressor to {model_path}")
         except Exception as e:
-            update_log(f"Failed to save .pt files: {str(e)}")
-            st.session_state.error_summary.append(f"PyTorch save error: {str(e)}")
+            update_log(f"Failed to save .pt model: {str(e)}")
 
-    # HDF5 (.h5)
-    if "h5" in save_formats:
-        try:
-            h5_path = os.path.join(DB_DIR, "gnn_models.h5")
-            with h5py.File(h5_path, 'w') as f:
-                model_group = f.create_group('gnn_model')
-                for name, param in model.state_dict().items():
-                    model_group.create_dataset(name, data=param.numpy())
-                scaler_group = f.create_group('scaler')
-                scaler_group.create_dataset('mean', data=np.zeros(5))
-                scaler_group.create_dataset('scale', data=np.ones(5))
-            model_files["gnn_models.h5"] = h5_path
-            update_log(f"Saved GNN model to HDF5 file {h5_path}")
-        except Exception as e:
-            update_log(f"Failed to save .h5 file: {str(e)}")
-            st.session_state.error_summary.append(f"HDF5 save error: {str(e)}")
-
-    update_log(f"Trained GNN with {len(valid_formulas)} samples")
+    update_log(f"Trained GNN regressor with {len(valid_formulas)} samples")
     return model, scaler, model_files
 
 # -----------------------------
 # Standardize material formula
 # -----------------------------
-def standardize_material_formula(formula, preserve_stoichiometry=False, canonical_order=True):
+def standardize_material_formula(formula, preserve_stoichiometry=False):
     if not formula or not isinstance(formula, str):
-        update_log(f"Invalid input formula: {formula}")
-        st.session_state.error_summary.append(f"Invalid formula: {formula}")
         return None
     
     formula = re.sub(r'\s+', '', formula)
     formula = re.sub(r'[\[\]\{\}]', '', formula)
     
     if not validate_formula(formula):
-        update_log(f"Invalid formula '{formula}': failed validation")
-        st.session_state.error_summary.append(f"Invalid formula '{formula}'")
         return None
     
     doping_pattern = r'(.+?)(?::|doped\s+)([A-Za-z0-9,\.]+)'
     doping_match = re.match(doping_pattern, formula, re.IGNORECASE)
     dopants = None
     if doping_match:
-        base_formula, dopants = doping_match.groups()
+        base_formula, dopants_str = doping_match.groups()
         formula = base_formula.strip()
-        dopants = dopants.split(',')
-        update_log(f"Detected doped material: base='{formula}', dopants='{','.join(dopants)}'")
+        dopants = [d.strip() for d in dopants_str.split(',')]
     
     try:
         comp = Composition(formula)
         if not comp.valid:
-            update_log(f"Invalid chemical formula '{formula}': not a valid composition")
-            st.session_state.error_summary.append(f"Invalid formula '{formula}': not a valid composition")
             return None
         
-        elements = comp.elements
-        if not all(isinstance(el, Element) for el in elements):
-            update_log(f"Invalid elements in formula '{formula}'")
-            st.session_state.error_summary.append(f"Invalid elements in formula '{formula}'")
-            return None
-        
-        if preserve_stoichiometry:
-            el_amt_dict = comp.get_el_amt_dict()
-            standardized_formula = ''.join(
-                f"{el}{amt:.2f}" if amt != int(amt) else f"{el}{int(amt)}"
-                for el, amt in (sorted(el_amt_dict.items()) if canonical_order else el_amt_dict.items())
-            )
-        else:
-            standardized_formula = comp.reduced_formula
+        standardized_formula = comp.reduced_formula
         
         if dopants:
             valid_dopants = []
             for dopant in dopants:
-                if not validate_formula(dopant):
-                    update_log(f"Invalid dopant '{dopant}' in '{formula}'")
-                    st.session_state.error_summary.append(f"Invalid dopant '{dopant}' in '{formula}'")
-                    continue
                 try:
-                    dopant_comp = Composition(dopant.strip())
+                    dopant_comp = Composition(dopant)
                     valid_dopants.append(dopant_comp.reduced_formula)
-                except Exception as e:
-                    update_log(f"Failed to parse dopant '{dopant}' in '{formula}': {e}")
-                    st.session_state.error_summary.append(f"Failed to parse dopant '{dopant}' in '{formula}'")
+                except:
+                    continue
             if valid_dopants:
                 standardized_formula = f"{standardized_formula}:{','.join(valid_dopants)}"
         
-        update_log(f"Standardized formula '{formula}' to '{standardized_formula}' using pymatgen")
         return standardized_formula
-    except Exception as e:
-        update_log(f"pymatgen could not parse formula '{formula}': {str(e)}")
-        st.session_state.error_summary.append(f"pymatgen failed for '{formula}': {str(e)}")
+    except Exception:
         return None
 
 # -----------------------------
@@ -544,19 +445,14 @@ def standardize_material_formula(formula, preserve_stoichiometry=False, canonica
 def predict_seebeck(formula, material_df, fuzzy_match=False):
     try:
         if not formula.strip():
-            update_log("Empty formula input provided")
             return None, "Please enter a valid chemical formula.", None
         
         normalized_formula = standardize_material_formula(formula, 
-                                                        preserve_stoichiometry=st.session_state.get('preserve_stoichiometry', False))
+                                                        st.session_state.get('preserve_stoichiometry', False))
         if not normalized_formula:
-            update_log(f"Invalid chemical formula: {formula}")
             return None, f"'{formula}' is not a valid chemical formula.", None
         
-        update_log(f"Normalized formula '{formula}' to '{normalized_formula}'")
-        
         if material_df is None or material_df.empty:
-            update_log("No Seebeck data available for formula lookup")
             return None, "Please run Seebeck Analysis first.", None
         
         formula_matches = material_df[material_df["material"].str.lower() == normalized_formula.lower()]
@@ -569,120 +465,62 @@ def predict_seebeck(formula, material_df, fuzzy_match=False):
             if similarity > 0.8:
                 formula_matches = material_df[material_df["material"].str.lower() == best_match.lower()]
                 similar_formula = best_match
-                update_log(f"Fuzzy matched '{normalized_formula}' to '{best_match}' (similarity: {similarity:.2%})")
         
         if not formula_matches.empty:
             seebeck_values = formula_matches["seebeck"].tolist()
             avg_seebeck = np.mean(seebeck_values)
             std_seebeck = np.std(seebeck_values)
-            total_matches = len(formula_matches)
-            paper_ids = formula_matches["paper_id"].unique()
-            contexts = formula_matches["context"].tolist()
-            
-            update_log(f"Formula '{normalized_formula}' has average Seebeck {avg_seebeck:.2f} μV/K (std: {std_seebeck:.2f})")
             return {
                 "formula": normalized_formula,
                 "seebeck": avg_seebeck,
                 "std": std_seebeck,
-                "paper_ids": paper_ids.tolist(),
-                "count": total_matches,
-                "contexts": contexts,
+                "count": len(formula_matches),
                 "all_values": seebeck_values
             }, None, similar_formula
         else:
             if st.session_state.ann_model is None:
-                update_log("No GNN model available for prediction")
                 return None, "Please run Seebeck Analysis to train the GNN.", None
             
-            # Featurize the single formula
             data_list, valid_formulas, _ = featurize_formulas([normalized_formula])
             if not data_list:
-                update_log(f"Failed to featurize formula '{normalized_formula}' for GNN")
-                return None, f"Could not featurize formula '{normalized_formula}' for prediction.", None
+                return None, f"Could not featurize formula '{normalized_formula}'.", None
             
-            # Check if .pt model is available
-            if "gnn_model.pt" in st.session_state.model_files:
-                try:
-                    model = GNNRegressor(input_dim=5, hidden_dim=64, output_dim=1)
-                    model.load_state_dict(torch.load(st.session_state.model_files["gnn_model.pt"], map_location='cpu'))
-                    model.eval()
+            try:
+                model = GNNRegressor(input_dim=5, hidden_dim=64, output_dim=1)
+                model.load_state_dict(torch.load(st.session_state.model_files["gnn_regressor.pt"], map_location='cpu'))
+                model.eval()
 
-                    data = data_list[0]
-                    data.batch = torch.zeros(data.x.size(0), dtype=torch.long)  # Single graph batch
-                    with torch.no_grad():
-                        prediction = model(data).item()
+                data = data_list[0]
+                data.batch = torch.zeros(data.x.size(0), dtype=torch.long)
+                with torch.no_grad():
+                    prediction = model(data).item()
 
-                    update_log(f"GNN predicted '{normalized_formula}' Seebeck {prediction:.2f} μV/K")
-                    return {
-                        "formula": normalized_formula,
-                        "seebeck": prediction,
-                        "std": 0.0,
-                        "paper_ids": [],
-                        "count": 0,
-                        "contexts": [],
-                        "all_values": [prediction]
-                    }, None, None
-                except Exception as e:
-                    update_log(f"GNN prediction failed: {str(e)}")
-                    st.session_state.error_summary.append(f"GNN prediction error: {str(e)}")
-            
-            update_log(f"No GNN model (.pt) found for prediction")
-            return None, "No GNN model available for prediction.", None
+                return {
+                    "formula": normalized_formula,
+                    "seebeck": prediction,
+                    "std": 0.0,
+                    "count": 0,
+                    "all_values": [prediction],
+                    "source": "GNN Prediction"
+                }, None, None
+            except Exception as e:
+                return None, f"GNN prediction failed: {str(e)}", None
     
     except Exception as e:
-        update_log(f"Error predicting Seebeck for '{formula}': {str(e)}")
         return None, f"Error predicting Seebeck: {str(e)}", None
-
-# -----------------------------
-# Batch predict Seebeck
-# -----------------------------
-def batch_predict_seebeck(formulas, material_df, fuzzy_match=False):
-    results = []
-    errors = []
-    suggestions = []
-    for formula in formulas:
-        result, error, similar_formula = predict_seebeck(formula.strip(), material_df, fuzzy_match)
-        if error:
-            errors.append(error)
-            if similar_formula:
-                suggestions.append((formula, similar_formula))
-        else:
-            results.append(result)
-    return results, errors, suggestions
 
 # -----------------------------
 # Extract Seebeck values
 # -----------------------------
 def extract_seebeck_values(db_file, preserve_stoichiometry=False, year_range=None):
     try:
-        update_log("Starting Seebeck value extraction with NER")
-        update_progress("Connecting to database...")
+        update_log("Starting Seebeck coefficient extraction")
         
         conn = sqlite3.connect(db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='papers'")
-        if not cursor.fetchone():
-            update_log("Database does not contain 'papers' table")
-            st.session_state.error_summary.append("Database does not contain 'papers' table")
-            conn.close()
-            return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
-        
-        cursor.execute("PRAGMA table_info(papers)")
-        columns = {col[1].lower() for col in cursor.fetchall()}
-        required_columns = {'id', 'title'}
-        if not required_columns.issubset(columns):
-            missing = required_columns - columns
-            update_log(f"Missing required columns: {missing}")
-            st.session_state.error_summary.append(f"Missing required columns: {missing}")
-            conn.close()
-            return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
-        
         text_column = detect_text_column(conn)
         if not text_column:
-            st.session_state.error_summary.append("No text column (content, text, abstract, body) found in database")
             conn.close()
-            return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
-        st.session_state.text_column = text_column
+            return pd.DataFrame()
         
         year_column = detect_year_column(conn)
         select_columns = f"id AS paper_id, title, {text_column}"
@@ -692,327 +530,299 @@ def extract_seebeck_values(db_file, preserve_stoichiometry=False, year_range=Non
         query = f"SELECT {select_columns} FROM papers WHERE {text_column} IS NOT NULL AND {text_column} NOT LIKE 'Error%'"
         if year_column and year_range:
             query += f" AND {year_column} BETWEEN {year_range[0]} AND {year_range[1]}"
+        
         df = pd.read_sql_query(query, conn)
-        
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='standardized_formulas'")
-        if cursor.fetchone():
-            cached_df = pd.read_sql_query("SELECT material, seebeck FROM standardized_formulas", conn)
-            if year_column:
-                try:
-                    cached_df['year'] = pd.read_sql_query("SELECT year FROM papers", conn)['year']
-                except Exception as e:
-                    update_log(f"Failed to load year from cached data: {str(e)}")
-            if 'paper_id' not in cached_df.columns:
-                cached_df['paper_id'] = pd.read_sql_query("SELECT id FROM papers", conn)['id']
-            if 'title' not in cached_df.columns:
-                cached_df['title'] = pd.read_sql_query("SELECT title FROM papers", conn)['title']
-            if 'context' not in cached_df.columns:
-                cached_df['context'] = ''
-            update_log("Loaded cached standardized formulas")
-            conn.close()
-            return cached_df
-        
         conn.close()
         
         if df.empty:
-            update_log("No valid papers found for Seebeck extraction")
-            st.session_state.error_summary.append("No valid papers found in database")
-            return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
+            return pd.DataFrame()
         
         nlp = load_spacy_model(st.session_state.synonyms)
-        
         seebeck_extractions = []
-        seebeck_patterns = [
-            r"seebeck\s+coefficient\s+of\s+([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
-            r"s\s*=\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
-            r"α\s*=\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
-            r"thermoelectric\s+power\s+of\s+([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
-            r"seebeck\s*=\s*([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)",
-            r"([-+]?\d+(?:\.\d+)?)\s*(?:μV/K|µV/K|μV·K⁻¹|µV·K⁻¹)\s*(?:for|of|in)\s+([A-Za-z0-9\(\)\-\s,:]+?)(?=\s|,|\.|;|:|$)"
-        ]
-        common_te_materials = [
-            "Bi2Te3", "PbTe", "SnSe", "CoSb3", "SiGe", "Skutterudite",
-            "Half-Heusler", "Clathrate", "Zn4Sb3", "Mg2Si", "Cu2Se"
-        ]
-        
-        def chunk_text(text, max_length=200000):
-            chunks = []
-            start = 0
-            while start < len(text):
-                end = min(start + max_length, len(text))
-                if end < len(text):
-                    last_period = text.rfind('.', start, end)
-                    end = last_period + 1 if last_period > start else end
-                chunks.append(text[start:end])
-                start = end
-            return chunks
         
         progress_bar = st.progress(0)
         for i, row in df.iterrows():
-            update_progress(f"Processing paper {row['paper_id']} ({i+1}/{len(df)})")
             content = row[text_column]
-            chunks = chunk_text(content)
             
-            for chunk_idx, chunk in enumerate(chunks):
-                doc = nlp(chunk)
-                formula_entities = [ent.text for ent in doc.ents if ent.label_ == "FORMULA"]
-                material_entities = [ent for ent in doc.ents if ent.label_ == "MATERIAL_TYPE"]
-                
-                linked_pairs = link_formula_to_seebeck(doc)
-                
-                for pair in linked_pairs:
-                    extraction_entry = {
-                        "paper_id": row["paper_id"],
-                        "title": row["title"],
-                        "material": pair["Formula"],
-                        "seebeck": pair["Seebeck_Value"],
-                        "context": f"Found in context: {chunk[max(0, chunk.find(pair['Formula'])-50):min(len(chunk), chunk.find(pair['Formula'])+50)]}..."
-                    }
-                    if 'year' in row:
-                        extraction_entry['year'] = row['year']
-                    seebeck_extractions.append(extraction_entry)
-                
-                seebeck_materials = set()
-                for pattern in seebeck_patterns:
-                    matches = re.finditer(pattern, chunk, re.IGNORECASE)
-                    for match in matches:
-                        value_str = match.group(1).strip()
-                        try:
-                            value = float(value_str)
-                            if -500 <= value <= 500:
-                                material = match.group(2).strip() if len(match.groups()) > 1 else ""
-                                if material and len(material) > 2 and material in formula_entities and validate_formula(material):
-                                    standardized_material = standardize_material_formula(material, preserve_stoichiometry)
-                                    if standardized_material:
-                                        seebeck_materials.add((standardized_material, value, match.start()))
-                        except ValueError:
-                            continue
-                
-                seebeck_context = re.search(r"seebeck[^\.]{0,500}", chunk, re.IGNORECASE)
-                
-                if seebeck_context:
-                    context_doc = nlp(seebeck_context.group(0))
-                    for ent in context_doc.ents:
-                        if ent.label_ == "FORMULA" and validate_formula(ent.text):
-                            standardized_material = standardize_material_formula(ent.text, preserve_stoichiometry)
-                            if standardized_material:
-                                # Extract value from context (simplified; in practice, parse nearby number)
-                                value_match = re.search(r'([-+]?\d+(?:\.\d+)?)', seebeck_context.group(0))
-                                if value_match:
-                                    value = float(value_match.group(1))
-                                    if -500 <= value <= 500:
-                                        seebeck_materials.add((standardized_material, value, ent.start_char))
-                
-                for material in common_te_materials:
-                    if material.lower() in chunk.lower():
-                        doc = nlp(material)
-                        if any(ent.label_ == "FORMULA" for ent in doc.ents) and validate_formula(material):
-                            standardized_material = standardize_material_formula(material, preserve_stoichiometry)
-                            if standardized_material:
-                                if seebeck_context and material.lower() in seebeck_context.group(0).lower():
-                                    value_match = re.search(r'([-+]?\d+(?:\.\d+)?)', seebeck_context.group(0))
-                                    if value_match:
-                                        value = float(value_match.group(1))
-                                        if -500 <= value <= 500:
-                                            seebeck_materials.add((standardized_material, value, 0))
-                
-                for material, value, start_pos in seebeck_materials:
-                    context = chunk[max(0, start_pos-50):min(len(chunk), start_pos+50)]
-                    extraction_entry = {
-                        "paper_id": row["paper_id"],
-                        "title": row["title"],
-                        "material": material,
-                        "seebeck": value,
-                        "context": f"Found in context: {context}..."
-                    }
-                    if 'year' in row:
-                        extraction_entry['year'] = row['year']
-                    seebeck_extractions.append(extraction_entry)
-                
-                doc = None
-                import gc
-                gc.collect()
+            # Extract Seebeck values and associate with formulas
+            seebeck_value = extract_seebeck_value(content)
+            if seebeck_value is not None:
+                doc = nlp(content)
+                for ent in doc.ents:
+                    if ent.label_ == "FORMULA" and validate_formula(ent.text):
+                        standardized_formula = standardize_material_formula(ent.text, preserve_stoichiometry)
+                        if standardized_formula:
+                            seebeck_extractions.append({
+                                "paper_id": row["paper_id"],
+                                "title": row["title"],
+                                "material": standardized_formula,
+                                "seebeck": seebeck_value,
+                                "context": content[max(0, ent.start_char-50):min(len(content), ent.end_char+50)]
+                            })
             
             progress_value = min((i + 1) / len(df), 1.0)
             progress_bar.progress(progress_value)
         
         seebeck_df = pd.DataFrame(seebeck_extractions)
-        
         if seebeck_df.empty:
-            update_log("No Seebeck values extracted")
-            st.session_state.error_summary.append("No Seebeck values found")
-            return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
+            return pd.DataFrame()
         
-        seebeck_df = seebeck_df.drop_duplicates(subset=["paper_id", "material", "seebeck"])
-        seebeck_df = seebeck_df.sort_values(by=["material", "seebeck"])
-        update_log(f"Cleaned and sorted DataFrame: {len(seebeck_df)} unique extractions")
-        update_log(f"seebeck_df columns: {seebeck_df.columns.tolist()}")
-        
+        # Cache to database
         conn = sqlite3.connect(db_file)
-        seebeck_df[["material", "seebeck"] + (["year"] if 'year' in seebeck_df.columns else [])].to_sql("standardized_formulas", conn, if_exists="replace", index=False)
+        seebeck_df[["material", "seebeck"]].to_sql("seebeck_cache", conn, if_exists="replace", index=False)
         conn.close()
-        update_log("Cached standardized formulas in database")
         
-        formulas = seebeck_df["material"].unique().tolist()
-        targets = [seebeck_df[seebeck_df["material"] == f]["seebeck"].mean() for f in formulas]
+        # Train GNN on averaged values per formula
+        material_averages = seebeck_df.groupby("material")["seebeck"].mean().to_dict()
+        formulas = list(material_averages.keys())
+        targets = list(material_averages.values())
+        
         model, scaler, model_files = train_gnn(formulas, targets)
-        st.session_state.ann_model = model  # Keep same key for compatibility
-        st.session_state.scaler = scaler
+        st.session_state.ann_model = model
         st.session_state.model_files = model_files
         
-        update_log(f"Extracted {len(seebeck_df)} Seebeck values")
         return seebeck_df
     
-    except sqlite3.OperationalError as e:
-        update_log(f"SQLite error: {str(e)}")
-        st.session_state.error_summary.append(f"SQLite error: {str(e)}")
-        return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
     except Exception as e:
         update_log(f"Error in Seebeck extraction: {str(e)}")
-        st.session_state.error_summary.append(f"Extraction error: {str(e)}")
-        return pd.DataFrame(columns=["paper_id", "title", "material", "seebeck", "context"])
+        return pd.DataFrame()
 
 # -----------------------------
 # Plot Seebeck values
 # -----------------------------
-def plot_seebeck_values(df, top_n=20, year_range=None):
+def plot_seebeck_values(df, top_n=20):
     if df.empty:
-        update_log("Empty DataFrame provided to plot_seebeck_values")
-        return None, None, None, None, None
+        return None
     
-    update_log(f"DataFrame columns: {df.columns.tolist()}")
-    
-    # Apply year range filter if 'year' column exists
-    if year_range and 'year' in df.columns:
-        try:
-            df = df[(df["year"] >= year_range[0]) & (df["year"] <= year_range[1])]
-            update_log(f"Filtered DataFrame by year range {year_range}: {len(df)} rows")
-        except Exception as e:
-            update_log(f"Error filtering by year: {str(e)}")
-            st.session_state.error_summary.append(f"Year filter error: {str(e)}")
-            df = df.copy()
-    elif year_range and 'year' not in df.columns:
-        update_log("Year column not found in DataFrame; skipping year filter")
-        st.session_state.error_summary.append("Year column not found; visualizations will exclude year-based filtering")
-    
-    if df.empty:
-        update_log("No data after filtering")
-        return None, None, None, None, None
-    
-    material_averages = df.groupby("material")["seebeck"].agg(['mean', 'count']).reset_index()
-    top_materials = material_averages.sort_values("mean", ascending=False)["material"].head(top_n).tolist()
-    filtered_df = df[df["material"].isin(top_materials)]
+    material_stats = df.groupby("material")["seebeck"].agg(['mean', 'std', 'count']).reset_index()
+    top_materials = material_stats.nlargest(top_n, 'mean')
     
     # Bar chart
     fig_bar = px.bar(
-        material_averages.sort_values("mean", ascending=False).head(top_n), 
+        top_materials, 
         x="material", 
-        y="mean", 
-        error_y="std" if 'std' in material_averages else None,
-        title=f"Top {top_n} Materials by Average Seebeck (μV/K)",
-        labels={"material": "Formula", "mean": "Average Seebeck (μV/K)"},
-        color_discrete_sequence=["#636EFA"]
+        y="mean",
+        error_y="std",
+        title=f"Top {top_n} Materials by Average Seebeck Coefficient (μV/K)",
+        labels={"material": "Formula", "mean": "Average Seebeck (μV/K)"}
     )
-    fig_bar.update_layout(xaxis_tickangle=-45, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig_bar.update_layout(xaxis_tickangle=-45)
     
     # Histogram
-    fig_hist = px.histogram(
-        filtered_df, x="seebeck",
-        title="Distribution of Seebeck Values",
-        labels={"seebeck": "Seebeck (μV/K)"},
-        color_discrete_sequence=["#636EFA"]
-    )
-    fig_hist.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig_hist = px.histogram(df, x="seebeck", title="Distribution of Seebeck Coefficients", nbins=50)
     
-    # Timeline chart
-    fig_timeline = None
-    if 'year' in df.columns and df["year"].notna().any():
-        yearly_data = df.groupby("year")["seebeck"].mean().reset_index()
-        fig_timeline = px.line(
-            yearly_data,
-            x="year",
-            y="seebeck",
-            title="Trend of Average Seebeck Over Time",
-            labels={"year": "Year", "seebeck": "Average Seebeck (μV/K)"},
-            color_discrete_sequence=["#636EFA"]
-        )
-        fig_timeline.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    else:
-        update_log("No valid year data for timeline plot")
-    
-    # Co-occurrence heatmap
-    material_papers = df.groupby(["material", "paper_id"]).size().unstack(fill_value=0)
-    co_occurrence = material_papers.T.dot(material_papers)
-    np.fill_diagonal(co_occurrence.values, 0)
-    
-    valid_materials = [m for m in top_materials if m in co_occurrence.index and m in co_occurrence.columns]
-    update_log(f"Top materials: {list(top_materials)}")
-    update_log(f"Valid materials for co-occurrence: {valid_materials}")
-    update_log(f"Co-occurrence index: {list(co_occurrence.index)}")
-    
-    if not valid_materials:
-        update_log("No valid materials for co-occurrence heatmap")
-        fig_heatmap = None
-    else:
-        co_occurrence = co_occurrence.loc[valid_materials, valid_materials]
-        fig_heatmap = go.Figure(data=go.Heatmap(
-            z=co_occurrence.values,
-            x=co_occurrence.columns,
-            y=co_occurrence.index,
-            colorscale="Viridis",
-            text=co_occurrence.values,
-            texttemplate="%{text}",
-            textfont={"size": 10}
-        ))
-        fig_heatmap.update_layout(
-            title="Material Co-occurrence Heatmap",
-            xaxis_title="Formula",
-            yaxis_title="Formula",
-            xaxis_tickangle=-45,
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)"
-        )
-    
-    # Sunburst chart
-    fig_sunburst = None
-    if 'year' in df.columns:
-        sunburst_data = df.groupby(['year', 'material']).agg({'seebeck': 'mean'}).reset_index()
-        fig_sunburst = px.sunburst(
-            sunburst_data,
-            path=['year', 'material'],
-            values='seebeck',
-            title="Hierarchical Distribution of Seebeck Values",
-            labels={"year": "Year", "material": "Formula", "seebeck": "Average Seebeck (μV/K)"}
-        )
-        fig_sunburst.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    else:
-        sunburst_data = df.groupby(['material']).agg({'seebeck': 'mean'}).reset_index()
-        fig_sunburst = px.sunburst(
-            sunburst_data,
-            path=['material'],
-            values='seebeck',
-            title="Hierarchical Distribution of Seebeck Values (No Year Data)",
-            labels={"material": "Formula", "seebeck": "Average Seebeck (μV/K)"}
-        )
-        fig_sunburst.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-    
-    return fig_bar, fig_hist, fig_timeline, fig_heatmap, fig_sunburst
+    return fig_bar, fig_hist
 
 # -----------------------------
-# Logging and directory setup
+# Logging functions
 # -----------------------------
-DB_DIR = os.path.dirname(os.path.abspath(__file__))
 logging.basicConfig(
-    filename=os.path.join(DB_DIR, 'thermoelectric_seebeck_analysis.log'),
+    filename=os.path.join(DB_DIR, 'seebeck_gnn_analysis.log'),
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# ... (rest of utils: update_log, update_progress, detect_text_column, detect_year_column remain identical)
+def update_log(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    memory_usage = psutil.Process().memory_info().rss / 1024**2
+    log_message = f"[{timestamp}] {message} (Memory: {memory_usage:.2f} MB)"
+    
+    if "log_buffer" not in st.session_state:
+        st.session_state.log_buffer = []
+    st.session_state.log_buffer.append(log_message)
+    if len(st.session_state.log_buffer) > 50:
+        st.session_state.log_buffer.pop(0)
+    
+    logging.info(log_message)
+
+def update_progress(message):
+    if "progress_log" not in st.session_state:
+        st.session_state.progress_log = []
+    st.session_state.progress_log.append(message)
+    if len(st.session_state.progress_log) > 10:
+        st.session_state.progress_log.pop(0)
+
+def detect_text_column(conn):
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(papers)")
+    columns = {col[1].lower() for col in cursor.fetchall()}
+    possible_text_columns = ['content', 'text', 'abstract', 'body']
+    for col in possible_text_columns:
+        if col.lower() in columns:
+            return col
+    return None
+
+def detect_year_column(conn):
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(papers)")
+    columns = {col[1].lower() for col in cursor.fetchall()}
+    possible_year_columns = ['year', 'publication_year', 'date']
+    for col in possible_year_columns:
+        if col.lower() in columns:
+            return col
+    return None
 
 # -----------------------------
-# Main Streamlit app
+# Main Streamlit App
 # -----------------------------
-# ... (identical to original, but replace "Material Classification" with "Seebeck Value Extraction", "p-type vs n-type" with "Seebeck coefficients", synonyms for Seebeck terms, call extract_seebeck_values, plot_seebeck_values, predict_seebeck, batch_predict_seebeck, update metrics/visuals for numerical Seebeck, CSV "seebeck_via_nlp.csv", etc.)
+st.set_page_config(page_title="Seebeck GNN Regressor", layout="wide")
+st.title("🔬 Seebeck Coefficient GNN Regressor")
+st.markdown("""
+**Extract and predict Seebeck coefficients (μV/K) from thermoelectric literature using GNN**
+- NLP extraction of formulas + Seebeck values from SQLite databases
+- Graph Neural Network trained on extracted data
+- Predict Seebeck for any chemical formula
+""")
+
+# Initialize session state
+for key in ["log_buffer", "seebeck_data", "db_file", "error_summary", "progress_log", 
+            "text_column", "synonyms", "ann_model", "model_files", "save_formats"]:
+    if key not in st.session_state:
+        if key == "synonyms":
+            st.session_state[key] = {
+                "seebeck": ["seebeck coefficient", "seebeck", "thermopower", "s", "α"],
+                "material": ["thermoelectric material", "te material", "semiconductor"]
+            }
+        elif key == "save_formats":
+            st.session_state[key] = ["pt", "pkl"]
+        elif key == "log_buffer":
+            st.session_state[key] = []
+        elif key == "error_summary":
+            st.session_state[key] = []
+        elif key == "progress_log":
+            st.session_state[key] = []
+        else:
+            st.session_state[key] = None
+
+# Database selection
+st.header("📁 Database Selection")
+db_files = glob.glob(os.path.join(DB_DIR, "*.db"))
+db_options = [os.path.basename(f) for f in db_files] + ["Upload new .db"]
+db_selection = st.selectbox("Select Database", db_options)
+
+if db_selection != "Upload new .db":
+    st.session_state.db_file = os.path.join(DB_DIR, db_selection)
+    update_log(f"Selected database: {db_selection}")
 else:
-    st.warning("Select or upload a database file.")
+    uploaded_file = st.file_uploader("Upload SQLite (.db)", type=["db"])
+    if uploaded_file:
+        temp_path = os.path.join(DB_DIR, f"uploaded_{uuid.uuid4().hex}.db")
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.read())
+        st.session_state.db_file = temp_path
+        update_log(f"Uploaded database: {temp_path}")
+
+# Main tabs
+if st.session_state.db_file:
+    tab1, tab2 = st.tabs(["📊 Seebeck Extraction", "🔮 Formula Prediction"])
+    
+    with tab1:
+        st.header("Seebeck Coefficient Extraction & Analysis")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            preserve_stoichiometry = st.checkbox("Preserve stoichiometry", value=False)
+            top_n = st.slider("Top N materials", 5, 30, 15)
+        with col2:
+            st.session_state.save_formats = st.multiselect(
+                "Save model formats", ["pt", "pkl", "db", "h5"], 
+                default=st.session_state.save_formats
+            )
+        
+        if st.button("🚀 Extract Seebeck Coefficients", type="primary"):
+            with st.spinner("Extracting Seebeck values..."):
+                st.session_state.seebeck_data = extract_seebeck_values(
+                    st.session_state.db_file, preserve_stoichiometry
+                )
+            
+            if not st.session_state.seebeck_data.empty:
+                st.success(f"✅ Extracted {len(st.session_state.seebeck_data)} Seebeck values!")
+                
+                # Summary metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1: st.metric("Total Extractions", len(st.session_state.seebeck_data))
+                with col2: st.metric("Avg Seebeck", f"{st.session_state.seebeck_data['seebeck'].mean():.1f} μV/K")
+                with col3: st.metric("Max Seebeck", f"{st.session_state.seebeck_data['seebeck'].max():.1f} μV/K")
+                with col4: st.metric("Unique Materials", st.session_state.seebeck_data["material"].nunique())
+                
+                # Visualizations
+                fig_bar, fig_hist = plot_seebeck_values(st.session_state.seebeck_data, top_n)
+                col1, col2 = st.columns(2)
+                with col1: st.plotly_chart(fig_bar, use_container_width=True)
+                with col2: st.plotly_chart(fig_hist, use_container_width=True)
+                
+                # Data table
+                st.subheader("Extracted Data")
+                st.dataframe(st.session_state.seebeck_data.head(100))
+                
+                # Download
+                csv = st.session_state.seebeck_data.to_csv(index=False)
+                st.download_button("📥 Download CSV", csv, "seebeck_extractions.csv", "text/csv")
+            else:
+                st.warning("No Seebeck values extracted. Check logs.")
+        
+        st.subheader("📋 Logs")
+        st.text_area("", "\n".join(st.session_state.log_buffer), height=200)
+    
+    with tab2:
+        st.header("🔮 Predict Seebeck Coefficient")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            formula_input = st.text_input("Enter Chemical Formula", placeholder="e.g., Bi2Te3, PbTe, SnSe")
+            fuzzy_match = st.checkbox("Enable fuzzy matching")
+        with col2:
+            if st.button("🔮 Predict Seebeck", type="primary"):
+                if formula_input:
+                    with st.spinner("Predicting..."):
+                        result, error, similar = predict_seebeck(
+                            formula_input, st.session_state.seebeck_data, fuzzy_match
+                        )
+                        
+                        if error:
+                            st.error(error)
+                            if similar:
+                                st.info(f"💡 Similar formula found: {similar}")
+                        else:
+                            st.success(f"✅ **{result['formula']}**")
+                            st.metric("Predicted Seebeck", f"{result['seebeck']:.1f} μV/K", 
+                                    delta=f"±{result['std']:.1f}" if result['std'] > 0 else None)
+                            
+                            if result['count'] > 0:
+                                st.info(f"📚 Found in {result['count']} papers")
+                            else:
+                                st.info("🧠 GNN prediction")
+                            
+                            st.json({"All values": result['all_values'][:5]})
+        
+        st.subheader("Batch Prediction")
+        uploaded_csv = st.file_uploader("Upload CSV with 'formula' column")
+        if uploaded_csv and st.button("Predict Batch"):
+            df = pd.read_csv(uploaded_csv)
+            if 'formula' in df.columns:
+                results = []
+                for formula in df['formula'].dropna():
+                    result, _, _ = predict_seebeck(formula, st.session_state.seebeck_data, fuzzy_match)
+                    if result:
+                        results.append(result)
+                
+                if results:
+                    batch_df = pd.DataFrame([{
+                        "Formula": r["formula"],
+                        "Predicted Seebeck (μV/K)": f"{r['seebeck']:.1f}",
+                        "Source": "Literature" if r['count'] > 0 else "GNN"
+                    } for r in results])
+                    st.dataframe(batch_df)
+                    st.download_button("Download Batch Results", batch_df.to_csv(index=False), "batch_predictions.csv")
+            else:
+                st.error("CSV must have 'formula' column")
+
+else:
+    st.warning("👆 Please select or upload a database file first.")
+
+# Model downloads
+if st.session_state.model_files:
+    st.sidebar.header("💾 Download Models")
+    for filename, filepath in st.session_state.model_files.items():
+        with open(filepath, 'rb') as f:
+            st.sidebar.download_button(f"Download {filename}", f, file_name=filename)
