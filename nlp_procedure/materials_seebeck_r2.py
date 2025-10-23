@@ -54,8 +54,7 @@ except Exception:
 
 # Formula validation
 try:
-    from
-    pymatgen.core.composition import Composition
+    from pymatgen.core.composition import Composition
     PYMATGEN_AVAILABLE = True
 except Exception:
     PYMATGEN_AVAILABLE = False
