@@ -7,7 +7,7 @@ from io import BytesIO
 from math import isnan
 import os
 
-# Try better PDF parsers
+# --- PDF Parsers ---
 try:
     import pdfplumber
     PDF_PLUMBER_AVAILABLE = True
@@ -26,14 +26,14 @@ try:
 except Exception:
     TABULA_AVAILABLE = False
 
-# Quantity parsing
+# --- Quantity Parsing ---
 try:
     from quantulum3 import parser as quant_parser
     QUANTULUM_AVAILABLE = True
 except Exception:
     QUANTULUM_AVAILABLE = False
 
-# Formula validation
+# --- Formula Validation ---
 try:
     from pymatgen.core.composition import Composition
     PYMATGEN_AVAILABLE = True
@@ -52,7 +52,7 @@ try:
 except Exception:
     PUBCHEM_AVAILABLE = False
 
-# NLP
+# --- NLP ---
 try:
     import spacy
     SPACY_AVAILABLE = True
@@ -61,6 +61,7 @@ except Exception:
     SPACY_AVAILABLE = False
     nlp = None
 
+# --- Streamlit UI ---
 st.title("Advanced PDF → SQLite / CSV: Seebeck Coefficient Extraction")
 
 st.markdown(
@@ -69,28 +70,24 @@ st.markdown(
     """
 )
 
-# List incorporated strategies
-st.subheader("Incorporated Strategies (Highlighted with Indices for Effectiveness)")
+# --- Strategy Overview ---
+st.subheader("Incorporated Strategies (with Indices)")
 st.markdown("""
-- **Strategy 1: Enhanced Search Scope and Bidirectionality** - Dynamic window expansion for values; bidirectional material search.  
-  *Index:* Average Value Distance (lower is better); Value Extraction Success Rate (higher is better).
-- **Strategy 2: Improved Linguistic Handling** - Heuristic pronoun resolution; advanced material NER with regex; multi-tool validation (pymatgen/rdkit/pubchem).  
-  *Index:* Material Association Rate (higher is better).
-- **Strategy 3: Robustify Unit and Value Parsing** - Quantulum3 integration; expanded regex for unit orders/variations.  
-  *Index:* Value Extraction Success Rate; Number of unique units parsed.
-- **Strategy 4: Better Text Extraction** - Tabula-py for tables.  
-  *Index:* Table detection flag; additional entries from tables.
-- **Strategy 5: Incorporate Semantics** - SpaCy for sentence context and dependency parsing.  
-  *Index:* Confidence Score Avg (higher indicates better contextual matches).
-- **Strategy 6: General Best Practices** - User configs; hybrid fallbacks; evaluation metrics.  
-  *Index:* All above + Outlier Rate.
+- **Strategy 1: Enhanced Search Scope and Bidirectionality** – Dynamic window expansion for values; bidirectional material search.  
+- **Strategy 2: Improved Linguistic Handling** – Heuristic pronoun resolution, regex-based NER, and multi-tool validation (pymatgen, RDKit, PubChem).  
+- **Strategy 3: Robust Unit and Value Parsing** – Quantulum3 integration and improved regex patterns.  
+- **Strategy 4: Improved Table Extraction** – Uses Tabula-py for better structured data retrieval.  
+- **Strategy 5: Semantic Context Parsing** – SpaCy for contextual extraction and dependency-based sentence linking.  
+- **Strategy 6: Evaluation Metrics & Export** – Includes confidence, distance, outlier detection, and SQLite/CSV export.
 """)
 
+# --- User Inputs ---
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 initial_window_chars = st.slider("Initial context window (chars)", 200, 2000, 600, 10)
 max_window_chars = st.slider("Max context window (chars)", 1000, 10000, 5000, 100)
 max_material_tokens = st.slider("Max tokens for material name", 1, 20, 10)
 outlier_zscore_thresh = st.number_input("Z-score threshold for outliers", 0.0, 10.0, 2.5, 0.1)
+
 use_spacy = st.checkbox("Use spaCy for semantics (if available)", value=SPACY_AVAILABLE)
 use_quantulum = st.checkbox("Use quantulum3 for quantities (if available)", value=QUANTULUM_AVAILABLE)
 
@@ -98,7 +95,7 @@ if uploaded_file is None:
     st.info("Upload a PDF to start.")
     st.stop()
 
-# --- Strategy 4: Better Text Extraction ---
+# --- Strategy 4: Text Extraction ---
 def extract_text_from_pdf(filelike):
     text = ""
     tables = []
@@ -120,7 +117,6 @@ def extract_text_from_pdf(filelike):
             pass
     elif PYPDF2_AVAILABLE:
         try:
-            filelike.seek(0)
             reader = PdfReader(filelike)
             for page in reader.pages:
                 t = page.extract_text() or ""
@@ -129,11 +125,12 @@ def extract_text_from_pdf(filelike):
             pass
     if TABULA_AVAILABLE:
         try:
-            filelike.seek(0)
             dfs = tabula.read_pdf(filelike, pages="all", multiple_tables=True)
             tables.extend(dfs)
         except Exception:
             pass
+
+    # Try to extract tables mentioning Seebeck
     table_text = ""
     for df in tables:
         for col in df.columns:
@@ -141,7 +138,10 @@ def extract_text_from_pdf(filelike):
                 matches = df[col].str.contains("seebeck coefficient", case=False, na=False)
                 if matches.any():
                     table_text += df[matches].to_string() + "\n"
+
     text += "\n" + table_text
+
+    # Fallback: direct binary read
     if not text.strip():
         try:
             filelike.seek(0)
@@ -157,59 +157,50 @@ if len(text.strip()) == 0:
     st.stop()
 
 st.subheader("Preview (first 2000 chars)")
-st.text_area("extracted_text_preview", text[:2000], height=220)
+st.text_area("Extracted text preview", text[:2000], height=220)
 
-# --- Strategy 3: Safe Regex Patterns (Fixed) ---
-# Fixed number pattern - removed problematic character class
+# --- Strategy 3: Regex Definitions ---
 num_pattern = r"(?P<number>[+\-]?(?:\d{1,3}(?:[,\s]\d{3})*|\d*)(?:\.\d+)?(?:[eE][+\-]?\d+)?)"
-
-# Corrected and simplified units pattern (removed escaped caret '\^' to avoid error)
-units_pattern = r"(?:µV\/K|μV\/K|uV\/K|microvolts? per kelvin|mV\/K|V\/K|μV K(?:\^[-1]|⁻¹|-1)?|uV K(?:\^[-1]|⁻¹|-1)?|mV K(?:\^[-1]|⁻¹|-1)?|V K(?:\^[-1]|⁻¹|-1)?|µV⋅K⁻¹|μV⋅K⁻¹)"
-
-dash_variants = r"(?:to|\-|–|—|−)"  # Safe non-capturing group for all dash types
-
-# Fixed regex: simplified and tested
+units_pattern = r"(?:µV\/K|μV\/K|uV\/K|mV\/K|V\/K|μV K(?:⁻¹|-1)?|uV K(?:⁻¹|-1)?|mV K(?:⁻¹|-1)?|V K(?:⁻¹|-1)?|µV⋅K⁻¹)"
+dash_variants = r"(?:to|\-|–|—|−)"
 value_regex = re.compile(
     rf"(?:(?:±|\+\/\-)\s*)?{num_pattern}(?:\s*{dash_variants}\s*{num_pattern})?\s*(?P<unit>{units_pattern})",
     flags=re.IGNORECASE | re.UNICODE
 )
 
-# Material regex: expanded for LaTeX, subscripts, doped
 material_regex = re.compile(
     r"\b([A-Z][a-z]?(?:_\{?[a-z0-9\-x]+\}?)?\d*(?:[A-Z][a-z]?(?:_\{?[a-z0-9\-x]+\}?)?\d*)*|[A-Z][a-z]?\d*)\b",
     flags=re.IGNORECASE
 )
 
-# Find all 'seebeck coefficient' occurrences (including synonyms)
+# --- Strategy 5: SpaCy Sentence Context ---
 sc_occurrences = [m for m in re.finditer(r"seebeck coefficient|thermoelectric power|S coefficient", text, flags=re.IGNORECASE)]
 st.write(f"Found **{len(sc_occurrences)}** occurrences (including synonyms).")
 
-# Strategy 5: SpaCy for context
 if SPACY_AVAILABLE and use_spacy:
     doc = nlp(text)
     sentences = list(doc.sents)
 else:
     sentences = re.split(r"[\.!?]\s+", text)
 
-# Helper: Get context (sentence/paragraph) for index
 def get_context(center_idx):
     if SPACY_AVAILABLE and use_spacy:
         for sent in sentences:
             if sent.start_char <= center_idx < sent.end_char:
                 idx = sentences.index(sent)
-                para_start = max(0, idx-1)
-                para = " ".join([s.text for s in sentences[para_start:para_start+3]])
+                para_start = max(0, idx - 1)
+                para = " ".join([s.text for s in sentences[para_start:para_start + 3]])
                 return para, sent.text
-        return text[max(0, center_idx-200):center_idx+200], ""
+        return text[max(0, center_idx - 200):center_idx + 200], ""
     else:
         paras = re.split(r"\n{2,}", text)
         for p in paras:
             start = text.find(p)
             if start <= center_idx < start + len(p):
                 return p, re.split(r"[\.!?]\s+", p)[-1] if "." in p else p
-        return text[max(0, center_idx-200):center_idx+200], ""
+        return text[max(0, center_idx - 200):center_idx + 200], ""
 
-# Strategy 1: Dynamic nearest value search
+# --- Strategy 1: Value Finder ---
 def find_nearest_value(center_idx, txt, initial_window=600, max_window=5000):
     window = initial_window
     while window <= max_window:
@@ -257,7 +248,7 @@ def find_nearest_value(center_idx, txt, initial_window=600, max_window=5000):
         window *= 2
     return []
 
-# Strategy 2: Bidirectional material search with validation & pronoun heuristic
+# --- Strategy 2: Material Search ---
 prev_mat = ""
 
 def find_material_around(value_start, value_end, txt, max_tokens=10, window=800):
@@ -309,12 +300,13 @@ def find_material_around(value_start, value_end, txt, max_tokens=10, window=800)
             return c_clean, "heuristic"
     return "", "none_found"
 
-# --- Process each occurrence ---
+# --- Process Occurrences ---
 rows = []
 for occ in sc_occurrences:
     center_idx = occ.start()
     context, sentence = get_context(center_idx)
-    candidates = find_nearest_value(center_idx, context if context else text, initial_window=initial_window_chars, max_window=max_window_chars)
+    candidates = find_nearest_value(center_idx, context if context else text,
+                                    initial_window=initial_window_chars, max_window=max_window_chars)
     if not candidates:
         rows.append({
             "seebeck_phrase_idx": center_idx,
@@ -329,28 +321,22 @@ for occ in sc_occurrences:
         })
         continue
     top = candidates[0]
-    raw = top["raw"]
-    numeric_val = top.get("numeric")
-    unit = top.get("unit")
-    dist = top["dist"]
-    confidence = 1 / (1 + dist / 100.0) if dist is not None else 0.0
     mat, mat_src = find_material_around(top["abs_start"], top["abs_end"], text, max_tokens=max_material_tokens)
     rows.append({
         "seebeck_phrase_idx": center_idx,
         "seebeck_context": sentence or text[max(0, center_idx-120):center_idx+120],
-        "value_raw": raw,
-        "value_numeric": numeric_val,
-        "unit": unit,
+        "value_raw": top["raw"],
+        "value_numeric": top.get("numeric"),
+        "unit": top.get("unit"),
         "material": mat,
         "material_source": mat_src,
-        "dist": dist,
-        "confidence": confidence,
+        "dist": top["dist"],
+        "confidence": 1 / (1 + top["dist"]/100.0),
     })
 
-# DataFrame
 df = pd.DataFrame(rows)
 
-# Unit normalization and conversion
+# --- Unit Normalization ---
 def normalize_unit(u):
     if not u:
         return None
@@ -377,7 +363,7 @@ def to_uV_per_K(val, unit):
 
 df["value_uV_per_K"] = df.apply(lambda r: to_uV_per_K(r["value_numeric"], r["unit_norm"]), axis=1)
 
-# Outliers
+# --- Outlier Detection ---
 vals = df["value_uV_per_K"].dropna()
 if len(vals) >= 2:
     mean = vals.mean()
@@ -388,48 +374,40 @@ else:
     df["zscore"] = None
     df["is_outlier"] = False
 
-# Display
+# --- Display ---
 st.subheader("Extracted Entries")
 st.dataframe(df[[
-    "seebeck_phrase_idx", "material", "material_source", "value_raw", "value_numeric", "unit", "unit_norm", "value_uV_per_K", "zscore", "is_outlier", "dist", "confidence"
+    "seebeck_phrase_idx", "material", "material_source", "value_raw", "value_numeric",
+    "unit", "unit_norm", "value_uV_per_K", "zscore", "is_outlier", "dist", "confidence"
 ]])
 
-# Strategy 6: Effectiveness Indices
+# --- Effectiveness Indices ---
 if not df.empty:
-    value_success = (df["value_numeric"].notna().sum() / len(df)) * 100
-    mat_success = (df["material"] != "").sum() / len(df) * 100
-    avg_dist = df["dist"].dropna().mean() if not df["dist"].dropna().empty else 0
-    avg_conf = df["confidence"].mean()
-    outlier_rate = (df["is_outlier"].sum() / len(df)) * 100
-    unique_units = df["unit_norm"].nunique()
-
     st.subheader("Effectiveness Indices")
-    st.write(f"**Value Extraction Success Rate:** {value_success:.2f}%")
-    st.write(f"**Material Association Rate:** {mat_success:.2f}%")
-    st.write(f"**Average Value Distance:** {avg_dist:.2f} chars")
-    st.write(f"**Average Confidence Score:** {avg_conf:.2f}")
-    st.write(f"**Outlier Rate:** {outlier_rate:.2f}%")
-    st.write(f"**Unique Units Parsed:** {unique_units}")
+    st.write(f"**Value Extraction Success Rate:** {(df['value_numeric'].notna().sum()/len(df))*100:.2f}%")
+    st.write(f"**Material Association Rate:** {(df['material'] != '').sum()/len(df)*100:.2f}%")
+    st.write(f"**Average Value Distance:** {df['dist'].dropna().mean():.2f} chars")
+    st.write(f"**Average Confidence Score:** {df['confidence'].mean():.2f}")
+    st.write(f"**Outlier Rate:** {(df['is_outlier'].sum()/len(df))*100:.2f}%")
+    st.write(f"**Unique Units Parsed:** {df['unit_norm'].nunique()}")
 
-# Save to SQLite
+# --- SQLite Export ---
 temp_db_path = "seebeck_data_temp.db"
 temp_conn = sqlite3.connect(temp_db_path)
 df.to_sql("seebeck_entries", temp_conn, index=False, if_exists="replace")
 temp_conn.commit()
 temp_conn.close()
-
 with open(temp_db_path, "rb") as f:
     db_data = f.read()
 os.remove(temp_db_path)
-
 st.download_button("Download SQLite .db", db_data, file_name="seebeck_data.db", mime="application/octet-stream")
 
-# CSV download
+# --- CSV Export ---
 csv_bytes = df.to_csv(index=False).encode("utf-8")
 st.download_button("Download CSV", csv_bytes, file_name="seebeck_data.csv", mime="text/csv")
 
-# Summary stats
-st.subheader("Summary statistics (µV/K)")
+# --- Summary ---
+st.subheader("Summary Statistics (µV/K)")
 if len(vals) > 0:
     st.write(f"Count: {len(vals)}")
     st.write(f"Mean: {vals.mean():.3g} µV/K")
@@ -439,12 +417,12 @@ if len(vals) > 0:
 else:
     st.write("No numeric Seebeck values parsed.")
 
-# Warnings
+# --- Warnings ---
 if not PYMATGEN_AVAILABLE:
     st.warning("pymatgen not available — limited formula validation.")
 if not SPACY_AVAILABLE:
-    st.warning("spaCy not available — no advanced semantics.")
+    st.warning("spaCy not available — no semantic parsing.")
 if not QUANTULUM_AVAILABLE:
-    st.warning("quantulum3 not available — using regex for quantities.")
+    st.warning("quantulum3 not available — regex-based quantity extraction only.")
 if not TABULA_AVAILABLE:
     st.warning("tabula-py not available — limited table extraction.")
