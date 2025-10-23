@@ -1,22 +1,3 @@
-# Improved PDF → SQLite / CSV: Advanced NER for Seebeck Coefficient Extraction
-# This version incorporates all suggested strategies:
-# 1. Enhanced Search Scope and Bidirectionality: Dynamic window expansion for values; bidirectional material search.
-# 2. Improved Linguistic Handling: Basic pronoun resolution heuristic; advanced material regex; multi-tool validation (pymatgen/rdkit/pubchem).
-# 3. Robustify Unit and Value Parsing: Integrated quantulum3 for quantity parsing if available; expanded regex for variations.
-# 4. Better Text Extraction: Tabula-py for table extraction if available.
-# 5. Incorporate Semantics: Used spaCy for sentence/paragraph context if available; dependency parsing for relations.
-# 6. General Best Practices: User configs; evaluation metrics; hybrid fallbacks.
-#
-# Indices to Measure Effectiveness (displayed in app):
-# - Value Extraction Success Rate (%): Percentage of 'Seebeck coefficient' occurrences with a parsed value.
-# - Material Association Rate (%): Percentage with an associated material.
-# - Average Value Distance (chars): Average character distance from phrase to value.
-# - Confidence Score Avg: Heuristic score (0-1) based on distance and match quality (lower distance = higher score).
-# - Outlier Rate (%): Percentage of values flagged as outliers.
-#
-# Notes: Install additional libs for full features: pip install spacy quantulum3 tabula-py rdkit pubchempy
-# python -m spacy download en_core_web_sm
-
 import streamlit as st
 import re
 import sqlite3
@@ -181,7 +162,10 @@ st.text_area("extracted_text_preview", text[:2000], height=220)
 # --- Strategy 3: Safe Regex Patterns (Fixed) ---
 # Fixed number pattern - removed problematic character class
 num_pattern = r"(?P<number>[+\-]?(?:\d{1,3}(?:[,\s]\d{3})*|\d*)(?:\.\d+)?(?:[eE][+\-]?\d+)?)"
-units_pattern = r"(?:µV\/K|μV\/K|uV\/K|microvolts? per kelvin|mV\/K|V\/K|μV K(?:\^-1|⁻¹|-1)?|uV K(?:\^-1|⁻¹|-1)?|mV K(?:\^-1|⁻¹|-1)?|V K(?:\^-1|⁻¹|-1)?|µV⋅K⁻¹|μV⋅K⁻¹)"
+
+# Corrected and simplified units pattern (removed escaped caret '\^' to avoid error)
+units_pattern = r"(?:µV\/K|μV\/K|uV\/K|microvolts? per kelvin|mV\/K|V\/K|μV K(?:\^[-1]|⁻¹|-1)?|uV K(?:\^[-1]|⁻¹|-1)?|mV K(?:\^[-1]|⁻¹|-1)?|V K(?:\^[-1]|⁻¹|-1)?|µV⋅K⁻¹|μV⋅K⁻¹)"
+
 dash_variants = r"(?:to|\-|–|—|−)"  # Safe non-capturing group for all dash types
 
 # Fixed regex: simplified and tested
