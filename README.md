@@ -1,5 +1,7 @@
 # Knowledge of Seebeck Coefficient with Materials Informatics and GNN
 
+# Database
+
 Query for Search of Knowledge on Seebeck Coefficient
 
 [![machinelearningseebeck](https://img.shields.io/badge/queryexplorer-streamlit-red)](https://seebeckcoefficient-queryforknowledge.streamlit.app/)
@@ -8,3 +10,9 @@ Query for Search of Knowledge on Seebeck Coefficient
 Database examiner
 
 [![machinelearningseebeck](https://img.shields.io/badge/dbexaminer-streamlit-red)](https://seebeckdatabase-examiner.streamlit.app/)
+
+# Training 
+
+
+
+[![machinelearningseebeck](https://img.shields.io/badge/formulagraph1-streamlit-red)](https://material-formula-and-graph.streamlit.app/)
