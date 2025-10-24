@@ -4,10 +4,9 @@ import sqlite3
 import pandas as pd
 from io import BytesIO
 
-# Optional NLP & parsing tools
 import spacy
 from quantulum3 import parser as qparser
-from chemdataextractor import Document
+import pubchempy as pcp
 
 # Optional PDF tools
 try:
@@ -23,20 +22,25 @@ try:
 except ImportError:
     CAMELOT_AVAILABLE = False
 
-# Load spaCy English model
+# Load spaCy model
 nlp = spacy.load("en_core_web_sm")
 
-st.title("Seebeck Coefficient Extractor v3")
-st.markdown("📘 Upload a scientific PDF to extract Seebeck coefficients and related materials automatically.")
+# --- Streamlit UI ---
+st.title("Seebeck Coefficient Extractor v4 (PubChem-Enhanced)")
+st.markdown("📘 Upload a PDF to extract Seebeck coefficients and validate materials using PubChem.")
 
 uploaded_file = st.file_uploader("📄 Choose a PDF file", type="pdf")
 
-# --- Helper Functions ---
+
+# ==========================
+# 🔧 Helper Functions
+# ==========================
+
 def extract_text_from_pdf(file):
-    """Extract text using pdfplumber"""
+    """Extract text using pdfplumber."""
     text = ""
     if not PDF_PLUMBER_AVAILABLE:
-        return ""
+        return text
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
@@ -47,8 +51,9 @@ def extract_text_from_pdf(file):
         st.error(f"Error reading PDF: {e}")
     return text
 
+
 def extract_tables_from_pdf(file):
-    """Extract tables using Camelot"""
+    """Extract tabular data (optional) using Camelot."""
     if not CAMELOT_AVAILABLE:
         return pd.DataFrame()
     try:
@@ -58,8 +63,37 @@ def extract_tables_from_pdf(file):
     except Exception:
         return pd.DataFrame()
 
+
+def detect_material_candidates(text):
+    """Detect possible material names or chemical formulas using regex."""
+    # Simple patterns: chemical formulas (like Bi2Te3, SnSe, CuInSe2) and capitalized material names
+    formula_pattern = r"\b([A-Z][a-z]?\d*[A-Za-z\d]*(?:[-–][A-Z][a-z]?\d*[A-Za-z\d]*)*)\b"
+    name_pattern = r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"
+
+    formulas = re.findall(formula_pattern, text)
+    names = re.findall(name_pattern, text)
+    candidates = list(set(formulas + names))
+    return [c for c in candidates if len(c) > 1 and len(c) < 40]
+
+
+def validate_with_pubchem(candidate):
+    """Validate a material name/formula using PubChem API."""
+    try:
+        results = pcp.get_compounds(candidate, 'name')
+        if results:
+            comp = results[0]
+            return {
+                "Material": candidate,
+                "PubChem_ID": comp.cid,
+                "Verified_Name": comp.iupac_name or comp.synonyms[0] if comp.synonyms else None,
+            }
+    except Exception:
+        pass
+    return None
+
+
 def find_nearest_material(sentence_text, materials, value_pos):
-    """Find the material closest to a Seebeck value in a sentence"""
+    """Find the material closest to the Seebeck value within a sentence."""
     nearest = None
     min_dist = float("inf")
     for mat in materials:
@@ -71,18 +105,27 @@ def find_nearest_material(sentence_text, materials, value_pos):
                 nearest = mat
     return nearest
 
+
 def extract_data(text):
-    """Extract Seebeck coefficient data from text"""
+    """Extract Seebeck coefficient data from text."""
     results = []
     doc = nlp(text)
-    cdoc = Document(text)
-    materials = [cem.text for cem in cdoc.cems]
-    materials = list(set(materials))  # unique list
 
+    # --- Step 1: Detect and validate materials ---
+    st.info("🔍 Validating material names with PubChem...")
+    candidates = detect_material_candidates(text)
+    validated_materials = []
+    for c in candidates[:50]:  # limit to avoid API overload
+        val = validate_with_pubchem(c)
+        if val:
+            validated_materials.append(val["Material"])
+    validated_materials = list(set(validated_materials))
+
+    # --- Step 2: Find Seebeck values per sentence ---
     for sent in doc.sents:
         sent_text = sent.text.strip()
         if re.search(r"(seebeck|thermoelectric power|S[-\s]?value)", sent_text, re.IGNORECASE):
-            # Use Quantulum3 for robust quantity parsing
+            # Use Quantulum3 for robust unit parsing
             quantities = qparser.parse(sent_text)
             for q in quantities:
                 if (
@@ -91,14 +134,15 @@ def extract_data(text):
                     and "kelvin" in str(q.unit).lower()
                 ):
                     value_pos = sent_text.lower().find(str(q.value))
-                    nearest_material = find_nearest_material(sent_text, materials, value_pos)
+                    nearest_mat = find_nearest_material(sent_text, validated_materials, value_pos)
                     results.append({
                         "Sentence": sent_text,
-                        "Material": nearest_material if nearest_material else "Unknown",
+                        "Material": nearest_mat if nearest_mat else "Unknown",
                         "Seebeck_value": q.value,
                         "Unit": str(q.unit),
                         "Confidence": "High (Quantulum)"
                     })
+
             # Fallback regex detection
             value_regex = re.compile(
                 r"([+-]?\d*\.?\d+(?:\s*(?:±|\+\/\-)\s*\d+\.?\d*)?)\s*(µV/K|μV/K|uV/K|mV/K|V/K|μV·K⁻¹|µV·K⁻¹|microvolt(?:s)? per kelvin)",
@@ -110,17 +154,21 @@ def extract_data(text):
                     val = float(re.findall(r"[-+]?\d*\.?\d+", val)[0])
                 except Exception:
                     val = None
-                nearest_material = find_nearest_material(sent_text, materials, vm.start())
+                nearest_mat = find_nearest_material(sent_text, validated_materials, vm.start())
                 results.append({
                     "Sentence": sent_text,
-                    "Material": nearest_material if nearest_material else "Unknown",
+                    "Material": nearest_mat if nearest_mat else "Unknown",
                     "Seebeck_value": val,
                     "Unit": unit,
                     "Confidence": "Medium (Regex)"
                 })
     return pd.DataFrame(results)
 
-# --- Main logic ---
+
+# ==========================
+# 🚀 Main Logic
+# ==========================
+
 if uploaded_file:
     text = extract_text_from_pdf(uploaded_file)
     if not text.strip():
@@ -130,33 +178,27 @@ if uploaded_file:
     st.subheader("📄 Extracted Text Preview")
     st.text_area("Preview", text[:1500], height=300)
 
-    with st.spinner("Extracting Seebeck data..."):
+    with st.spinner("Extracting and validating data..."):
         df = extract_data(text)
 
-    # Combine with table data if available
+    # Optional: extract tables
     tables_df = extract_tables_from_pdf(uploaded_file)
     if not tables_df.empty:
-        st.info(f"Extracted {len(tables_df)} table rows (Camelot).")
-        # Search for columns mentioning Seebeck
-        seebeck_cols = [c for c in tables_df.columns if re.search("seebeck", c, re.IGNORECASE)]
-        if seebeck_cols:
-            st.write("Detected Seebeck columns:", seebeck_cols)
+        st.info(f"📊 Extracted {len(tables_df)} table rows using Camelot.")
 
     if not df.empty:
         st.success(f"✅ Extracted {len(df)} Seebeck entries")
         st.dataframe(df)
 
-        # Save to SQLite memory
+        # Save SQLite database
         conn = sqlite3.connect(':memory:')
         df.to_sql('seebeck_data', conn, index=False, if_exists='replace')
 
-        # Save SQLite for download
         sqlite_bytes = BytesIO()
         with sqlite3.connect(sqlite_bytes) as mem_conn:
             df.to_sql('seebeck_data', mem_conn, index=False, if_exists='replace')
         sqlite_bytes.seek(0)
 
-        # Download buttons
         st.download_button(
             "⬇️ Download SQLite Database",
             data=sqlite_bytes.getvalue(),
@@ -173,12 +215,13 @@ if uploaded_file:
         )
 
         # Summary
-        st.subheader("📊 Summary Statistics")
-        st.write(f"Total mentions found: {len(df)}")
-        st.write(f"Entries with material identified: {df['Material'].ne('Unknown').sum()}")
-        st.write(f"Mean Seebeck value (approx.): {df['Seebeck_value'].mean():.2f} µV/K" if df['Seebeck_value'].notna().any() else "N/A")
-
+        st.subheader("📈 Summary Statistics")
+        st.write(f"Total Seebeck mentions: {len(df)}")
+        st.write(f"Entries with materials identified: {df['Material'].ne('Unknown').sum()}")
+        if df['Seebeck_value'].notna().any():
+            st.write(f"Average Seebeck coefficient: {df['Seebeck_value'].mean():.2f} µV/K")
     else:
-        st.warning("No Seebeck coefficients detected.")
+        st.warning("No Seebeck data found.")
+
 else:
     st.info("Please upload a PDF file to start.")
