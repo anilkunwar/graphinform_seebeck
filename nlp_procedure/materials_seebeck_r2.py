@@ -9,10 +9,11 @@ import os
 
 # Try better PDF parsers
 try:
-    import pdfplumber
-    PDF_PLUMBER_AVAILABLE = True
+    import pdfplumber
+    PDF_PLUMBER_AVAILABLE = True
 except Exception:
-    PDF_PLUMBER_AVAILABLE = False
+    PDF_PLUMBER_AVAILABLE = False
+
 
 try:
     from PyPDF2 import PdfReader
