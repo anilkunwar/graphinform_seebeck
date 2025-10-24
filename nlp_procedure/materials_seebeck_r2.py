@@ -28,40 +28,39 @@ except Exception:
 
 # Quantity parsing
 try:
-    from quantulum3 import parser as quant_parser
-    QUANTULUM_AVAILABLE = True
+    from quantulum3 import parser as quant_parser
+    QUANTULUM_AVAILABLE = True
 except Exception:
-    QUANTULUM_AVAILABLE = False
+    QUANTULUM_AVAILABLE = False
 
 # Formula validation
 try:
-    from pymatgen.core.composition import Composition
-    PYMATGEN_AVAILABLE = True
+    from pymatgen.core.composition import Composition
+    PYMATGEN_AVAILABLE = True
 except Exception:
-    PYMATGEN_AVAILABLE = False
+    PYMATGEN_AVAILABLE = False
 
 try:
-    from rdkit import Chem
-    RDKIT_AVAILABLE = True
+    from rdkit import Chem
+    RDKIT_AVAILABLE = True
 except Exception:
-    RDKIT_AVAILABLE = False
+    RDKIT_AVAILABLE = False
 
 try:
-    import pubchempy as pcp
-    PUBCHEM_AVAILABLE = True
+    import pubchempy as pcp
+    PUBCHEM_AVAILABLE = True
 except Exception:
-    PUBCHEM_AVAILABLE = False
+    PUBCHEM_AVAILABLE = False
 
 # NLP
 try:
-    import spacy
-    SPACY_AVAILABLE = True
-    # Ensure the model is downloaded. In a real environment, you might need:
-    # os.system('python -m spacy download en_core_web_sm')
-    nlp = spacy.load("en_core_web_sm")
+    import spacy
+    SPACY_AVAILABLE = True
+    nlp = spacy.load("en_core_web_sm")
 except Exception:
-    SPACY_AVAILABLE = False
-    nlp = None
+    SPACY_AVAILABLE = False
+    nlp = None
+
 
 st.title("Advanced PDF → SQLite / CSV: Seebeck Coefficient Extraction")
 
