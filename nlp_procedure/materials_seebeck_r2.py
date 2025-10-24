@@ -14,18 +14,17 @@ try:
 except Exception:
     PDF_PLUMBER_AVAILABLE = False
 
+try:
+    from PyPDF2 import PdfReader
+    PYPDF2_AVAILABLE = True
+except Exception:
+    PYPDF2_AVAILABLE = False
 
 try:
-    from PyPDF2 import PdfReader
-    PYPDF2_AVAILABLE = True
+    import tabula
+    TABULA_AVAILABLE = True
 except Exception:
-    PYPDF2_AVAILABLE = False
-
-try:
-    import tabula
-    TABULA_AVAILABLE = True
-except Exception:
-    TABULA_AVAILABLE = False
+    TABULA_AVAILABLE = False
 
 # Quantity parsing
 try:
