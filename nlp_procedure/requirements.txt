@@ -33,4 +33,5 @@ cleantext==1.1.4
 psutil
 h5py
 PubChemPy
+ChemDataExtractor
 quantulum3
