@@ -27,3 +27,5 @@ Database examiner
 [![machinelearningseebeck](https://img.shields.io/badge/formulagraph2-streamlit-red)](https://material-formula-and-graph2.streamlit.app/)
 
 [![machinelearningseebeck](https://img.shields.io/badge/formulagraph3-streamlit-red)](https://material-formula-and-graph3.streamlit.app/) (MWE with just extraction of numerical entity with NER, and display the average)
+
+[![machinelearningseebeck](https://img.shields.io/badge/formulagraph4-streamlit-red)](https://material-formula-and-graph4.streamlit.app/) (enhancement of formulagraph3 to include GNN modeling)
